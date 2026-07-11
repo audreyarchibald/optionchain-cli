@@ -196,11 +196,12 @@ def _pick_representative(
     ideal = ideals[bucket]
 
     def score(r: StrikeCompareRow) -> tuple:
-        liq = -(r.volume + r.open_interest * 0.25)
+        # Prefer liquid strikes first (dead deep ITM quotes are common noise)
+        liq = r.volume + r.open_interest * 0.35
         dist = abs(r.moneyness_pct - ideal)
-        # Prefer having a real premium
-        prem_pen = 0 if r.mid > 0 or r.last > 0 else 1
-        return (prem_pen, dist, liq)
+        prem_pen = 0 if (r.mid > 0 or r.last > 0) else 1
+        # Higher liquidity better → negate; closer to ideal moneyness better
+        return (prem_pen, -liq, dist)
 
     return sorted(pool, key=score)[0]
 
