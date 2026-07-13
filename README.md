@@ -52,6 +52,10 @@ uv run optionchain top
 # Top 10 only
 uv run optionchain top -n 10
 
+# Top 30 + export a TradingView watchlist .txt
+uv run optionchain top -n 30 --export
+uv run optionchain top -n 30 --export ./tv_watchlist.txt
+
 # Same thing (aliases): leaders | hot | most-active
 uv run optionchain leaders
 
@@ -121,6 +125,25 @@ uv run optionchain NVDA --compare call --if-spot 220
 
 ---
 
+## TradingView watchlist export
+
+```bash
+uv run optionchain top -n 30 --export
+# or
+uv run optionchain top -n 30 --export ./my_watchlist.txt
+```
+
+Creates a text file (one symbol per line, e.g. `NASDAQ:AAPL`) you can import in TradingView:
+
+1. Open a **Watchlist**
+2. Click the **···** menu
+3. **Import list of symbols**
+4. Choose the `.txt` file
+
+Use `--no-exchange` if you prefer bare tickers without the `NASDAQ:` / `NYSE:` prefix.
+
+---
+
 ## ITM vs OTM (`--compare`)
 
 When you are deciding between **in-the-money** and **out-of-the-money** contracts for a **long** call or put:
@@ -174,6 +197,8 @@ usage: optionchain [-h] [-t {call,put,all}] [-e EXPIRY]
 |------|-------------|
 | `symbol` | Ticker (`TSLA`, `AAPL`, …) **or** `top` / `leaders` / `hot` |
 | `-n / --count` | For `top`: how many underlyings to list (default **20**) |
+| `--export [FILE]` | With `top`: write a TradingView watchlist `.txt` (auto name or path) |
+| `--no-exchange` | With `--export`: bare tickers only (`AAPL` not `NASDAQ:AAPL`) |
 | `--history DAYS` | Multi-day change for near-ATM contracts (daily closes, max 30) |
 | `--plot` | With `--history`: draw call/put chart **in the terminal** |
 | `--save [FILE]` | Also save a PNG (auto name, or your path). Implies `--plot` |

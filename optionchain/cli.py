@@ -27,6 +27,7 @@ from optionchain.history import fetch_chain_history
 from optionchain.leaders import TOP_COMMANDS, fetch_option_volume_leaders
 from optionchain.metrics import compute_put_call_ratio, summarize_chain
 from optionchain.plotting import print_terminal_plot, save_chain_history_plot
+from optionchain.watchlist import export_tradingview_watchlist
 
 
 EXAMPLES = """
@@ -36,6 +37,12 @@ examples:
 
   optionchain top -n 10
       Top 10 only
+
+  optionchain top -n 30 --export
+      Top 30 + save a TradingView watchlist .txt (auto filename)
+
+  optionchain top -n 30 --export ./tv_watchlist.txt
+      Top 30 + export to a path you choose (import in TradingView)
 
   optionchain TSLA
       Show the nearest expiry option chain for Tesla
@@ -112,6 +119,28 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         metavar="N",
         help="For 'top': how many underlyings to show (default: 20, max: 100).",
+    )
+    parser.add_argument(
+        "--export",
+        "--watchlist",
+        nargs="?",
+        const="__AUTO__",
+        default=None,
+        metavar="FILE",
+        dest="export_path",
+        help=(
+            "With 'top': also export symbols to a .txt file for TradingView "
+            "Watchlist → Import list. Use --export alone for an auto filename, "
+            "or --export ./watchlist.txt for a path."
+        ),
+    )
+    parser.add_argument(
+        "--no-exchange",
+        action="store_true",
+        help=(
+            "With --export: write bare tickers (AAPL) instead of "
+            "EXCHANGE:SYMBOL (NASDAQ:AAPL)."
+        ),
     )
     parser.add_argument(
         "-t",
@@ -318,6 +347,13 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise OptionChainError("--count / -n cannot exceed 100.")
         return
 
+    if args.export_path is not None and not _is_top_command(args.symbol):
+        raise OptionChainError(
+            "--export only works with the top command.\n"
+            "  Example:  optionchain top -n 30 --export\n"
+            "  Example:  optionchain top -n 30 --export ./tv_watchlist.txt"
+        )
+
     if args.compare is not None:
         if args.history_days is not None:
             raise OptionChainError("Use either --compare or --history, not both.")
@@ -388,6 +424,24 @@ def _validate_args(args: argparse.Namespace) -> None:
 def _run_top(args: argparse.Namespace) -> int:
     result = fetch_option_volume_leaders(top_n=args.count)
     print_leaders(result)
+
+    if args.export_path is not None:
+        file_path = None if args.export_path == "__AUTO__" else args.export_path
+        saved = export_tradingview_watchlist(
+            result,
+            path=file_path,
+            with_exchange=not args.no_exchange,
+        )
+        print_tip(f"TradingView watchlist saved: {saved}")
+        print_tip(
+            "In TradingView: open a watchlist → ··· menu → "
+            "Import list of symbols → choose this .txt file"
+        )
+    else:
+        print_tip(
+            f"Export for TradingView:  optionchain top -n {args.count} --export"
+        )
+
     if args.explain:
         print_glossary(verbose=True)
     else:

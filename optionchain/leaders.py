@@ -38,6 +38,7 @@ class UnderlyingVolume:
     active_contracts: int
     spot_price: float | None = None
     change_pct: float | None = None
+    exchange: str | None = None  # Yahoo exchange code / name for TV export
 
     @property
     def put_call_ratio(self) -> float | None:
@@ -231,6 +232,7 @@ def _enrich_quotes(session, symbols: list[str]) -> dict[str, dict[str, Any]]:
                 "name": q.get("shortName") or q.get("longName") or sym,
                 "spot": q.get("regularMarketPrice"),
                 "change_pct": q.get("regularMarketChangePercent"),
+                "exchange": q.get("fullExchangeName") or q.get("exchange"),
             }
     return out
 
@@ -269,6 +271,7 @@ def _enrich_via_yfinance(symbols: list[str]) -> dict[str, dict[str, Any]]:
                 "name": name,
                 "spot": spot,
                 "change_pct": change,
+                "exchange": info.get("fullExchangeName") or info.get("exchange"),
             }
         except Exception:
             continue
@@ -324,6 +327,7 @@ def fetch_option_volume_leaders(
             except (TypeError, ValueError):
                 change_f = None
 
+            exch = info.get("exchange")
             leaders.append(
                 UnderlyingVolume(
                     rank=rank,
@@ -336,6 +340,7 @@ def fetch_option_volume_leaders(
                     active_contracts=int(b["contracts"]),
                     spot_price=spot_f,
                     change_pct=change_f,
+                    exchange=str(exch) if exch else None,
                 )
             )
 
