@@ -30,3 +30,7 @@ htmlcov/
 build/
 dist/
 *.spec
+
+# Local watchlist exports
+*_watchlist*.txt
+optionchain_top*.txt
