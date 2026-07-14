@@ -126,6 +126,23 @@ def test_padded_ylim_options_floor_zero():
     assert hi > 1.2
 
 
+def test_color_for_strike_atm_brighter_than_far():
+    from optionchain.plotting import color_for_strike, _moneyness_brightness
+
+    spot = 200.0
+    assert _moneyness_brightness(200, spot) > _moneyness_brightness(220, spot)
+    atm = color_for_strike("call", 200, spot)
+    far = color_for_strike("call", 230, spot)
+    # ATM green channel should be higher (brighter)
+    def g(hex_c: str) -> int:
+        return int(hex_c[3:5], 16)
+
+    assert g(atm) > g(far)
+    put_atm = color_for_strike("put", 200, spot)
+    put_far = color_for_strike("put", 170, spot)
+    assert put_atm != put_far
+
+
 def test_build_figure_spot_ylim_tight():
     from optionchain.plotting import build_chain_history_figure
     import matplotlib.pyplot as plt

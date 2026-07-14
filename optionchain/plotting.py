@@ -8,17 +8,61 @@ from pathlib import Path
 from optionchain.fetcher import OptionChainError
 from optionchain.history import ChainHistoryResult, ContractHistory
 
-# One color each — type is told by color; strike is labeled on the line.
+# Base hues — brightness varies by distance to spot (ATM = brightest).
 CALL_COLOR = "green"
 PUT_COLOR = "red"
 CALL_COLOR_HEX = "#2ca02c"
 PUT_COLOR_HEX = "#d62728"
-SPOT_COLOR_HEX = "#1f77b4"
+SPOT_COLOR_HEX = "#38bdf8"
+
+# RGB endpoints for ATM (bright) → far from money (dim)
+_CALL_ATM = (74, 222, 128)    # #4ade80
+_CALL_FAR = (22, 55, 40)      # dark muted green
+_PUT_ATM = (248, 113, 113)    # #f87171
+_PUT_FAR = (70, 30, 35)       # dark muted red
 
 
 def _strike_label(c: ContractHistory) -> str:
     """Strike only (color already says call vs put)."""
     return f"{c.strike:g}"
+
+
+def _moneyness_brightness(strike: float, spot: float, *, scale: float = 0.08) -> float:
+    """
+    1.0 = at the money (bright); 0.0 = far from money (dim).
+
+    ``scale`` is the % distance from spot that maps to fully dim (~8%).
+    """
+    if spot <= 0:
+        return 0.6
+    dist = abs(float(strike) - float(spot)) / float(spot)
+    t = min(1.0, max(0.0, dist / scale))
+    return 1.0 - t
+
+
+def _blend_rgb(
+    bright: tuple[int, int, int],
+    dim: tuple[int, int, int],
+    brightness: float,
+) -> str:
+    """brightness 1 → bright color, 0 → dim color."""
+    b = max(0.0, min(1.0, brightness))
+    r = int(dim[0] + (bright[0] - dim[0]) * b)
+    g = int(dim[1] + (bright[1] - dim[1]) * b)
+    bl = int(dim[2] + (bright[2] - dim[2]) * b)
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def color_for_strike(
+    option_type: str,
+    strike: float,
+    spot: float,
+) -> str:
+    """Green/red by type; brighter when strike is closer to spot."""
+    bright = _moneyness_brightness(strike, spot)
+    if str(option_type).lower() == "call":
+        return _blend_rgb(_CALL_ATM, _CALL_FAR, bright)
+    return _blend_rgb(_PUT_ATM, _PUT_FAR, bright)
 
 
 def _series_for_contract(
@@ -202,20 +246,37 @@ def build_chain_history_figure(
     ax_opt, ax_spot = axes
 
     option_ys: list[float] = []
+    spot = float(result.spot_price or 0.0)
+    if spot <= 0 and result.spot_by_date:
+        vals = [v for v in result.spot_by_date.values() if v]
+        if vals:
+            spot = float(vals[-1])
 
-    def _plot_group(group: list[ContractHistory], color: str) -> None:
-        for c in sorted(group, key=lambda x: x.strike):
+    def _plot_group(group: list[ContractHistory]) -> None:
+        # Plot farthest-from-money first so ATM lines sit on top
+        ordered = sorted(
+            group,
+            key=lambda c: abs(c.strike - spot) if spot > 0 else c.strike,
+            reverse=True,
+        )
+        for c in ordered:
             xs, ys = _series_for_contract(c, result.trade_dates)
             if len(xs) < 1:
                 continue
             option_ys.extend(ys)
+            color = color_for_strike(c.option_type, c.strike, spot)
+            bright = _moneyness_brightness(c.strike, spot)
+            lw = 1.4 + 1.4 * bright  # ATM thicker
+            ms = 3.5 + 2.0 * bright
             ax_opt.plot(
                 xs,
                 ys,
                 marker="o",
-                markersize=4.5,
-                linewidth=1.8,
+                markersize=ms,
+                linewidth=lw,
                 color=color,
+                solid_capstyle="round",
+                zorder=10 + int(bright * 10),
             )
             ax_opt.annotate(
                 _strike_label(c),
@@ -223,30 +284,33 @@ def build_chain_history_figure(
                 xytext=(6, 0),
                 textcoords="offset points",
                 color=color,
-                fontsize=8,
-                fontweight="bold",
+                fontsize=7 + int(2 * bright),
+                fontweight="bold" if bright > 0.55 else "normal",
                 va="center",
                 ha="left",
                 clip_on=False,
+                zorder=20 + int(bright * 10),
             )
 
-    _plot_group(calls, CALL_COLOR_HEX)
-    _plot_group(puts, PUT_COLOR_HEX)
+    _plot_group(calls)
+    _plot_group(puts)
 
     chart_title = title or (
         f"{result.symbol} options — calls (green) vs puts (red)\n"
-        f"Expiry {result.expiry}  ·  last {len(result.trade_dates)} sessions"
+        f"Expiry {result.expiry}  ·  last {len(result.trade_dates)} sessions  ·  "
+        f"brighter = closer to the money"
     )
-    ax_opt.set_title(chart_title, fontsize=12, pad=10)
+    ax_opt.set_title(chart_title, fontsize=11, pad=8)
     ax_opt.set_ylabel("Option close ($)")
     ax_opt.grid(True, alpha=0.28, linestyle="--")
     ax_opt.legend(
         handles=[
-            Line2D([0], [0], color=CALL_COLOR_HEX, lw=2, label="Calls"),
-            Line2D([0], [0], color=PUT_COLOR_HEX, lw=2, label="Puts"),
+            Line2D([0], [0], color=_blend_rgb(_CALL_ATM, _CALL_FAR, 1.0), lw=2.5, label="Calls (ATM bright)"),
+            Line2D([0], [0], color=_blend_rgb(_PUT_ATM, _PUT_FAR, 1.0), lw=2.5, label="Puts (ATM bright)"),
+            Line2D([0], [0], color=_blend_rgb(_CALL_ATM, _CALL_FAR, 0.25), lw=1.5, label="Farther = dimmer"),
         ],
         loc="best",
-        fontsize=9,
+        fontsize=8,
         framealpha=0.92,
     )
     opt_lim = _padded_ylim(option_ys, floor_at_zero=True, pad_frac=0.2)
@@ -294,8 +358,8 @@ def build_chain_history_figure(
     fig.text(
         0.01,
         0.01,
-        "Green = calls · Red = puts · number on line = strike  |  "
-        "Y-axes auto-zoom to data  |  Yahoo Finance",
+        "Green = calls · Red = puts · brighter = closer to spot  |  "
+        "Y-axes auto-zoom  |  Yahoo Finance",
         fontsize=8,
         color="#666666",
     )

@@ -1430,41 +1430,49 @@ class OptionChainApp(ctk.CTk):
 
         bar.add_actions(_hist_actions)
 
+        # Compact one-line status (avoid a tall empty card eating the plot)
         self.hist_card = InfoCard(t, accent=C["blue"])
-        self.hist_card.pack(fill="x", padx=10, pady=4)
+        self.hist_card.pack(fill="x", padx=10, pady=(2, 2))
         self.hist_card.set(
             "Multi-day option prices",
-            "Left = data table · Right = chart  ·  Green = calls · Red = puts.",
+            "Left = table · Right = chart  ·  Brighter line = closer to the money.",
         )
+        # Prevent status card from expanding into empty vertical space
+        try:
+            self.hist_card.pack_propagate(True)
+        except Exception:
+            pass
 
-        # Two columns: table (left) | plot (right)
-        paned = tk.PanedWindow(
-            t, orient=tk.HORIZONTAL, sashwidth=8, bg=C["surface"], sashrelief="flat"
-        )
-        paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Two columns: table (left) | plot (right) — fill all remaining space
+        body = ctk.CTkFrame(t, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        body.grid_columnconfigure(0, weight=2, uniform="hist")
+        body.grid_columnconfigure(1, weight=3, uniform="hist")
+        body.grid_rowconfigure(0, weight=1)
 
         table_wrap = ctk.CTkFrame(
-            paned,
+            body,
             fg_color=C["card"],
             corner_radius=12,
             border_width=1,
             border_color=C["border"],
         )
+        table_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         ctk.CTkLabel(
             table_wrap,
             text="CONTRACT HISTORY",
             font=_font(10, "bold"),
             text_color=C["cyan"],
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(8, 0))
+        ).pack(fill="x", padx=10, pady=(6, 0))
         host = tk.Frame(table_wrap, bg=C["card"])
-        host.pack(fill="both", expand=True, padx=8, pady=8)
+        host.pack(fill="both", expand=True, padx=6, pady=6)
         self.hist_tree = ttk.Treeview(
             host,
             columns=("type", "strike", "d0", "d1", "d2", "d3", "d4", "chg", "pct", "vol"),
             show="headings",
             style="App.Treeview",
-            height=16,
+            height=22,
         )
         for c, h in [
             ("type", "Type"), ("strike", "Strike"), ("d0", "D1"), ("d1", "D2"),
@@ -1472,36 +1480,37 @@ class OptionChainApp(ctk.CTk):
             ("pct", "Δ %"), ("vol", "Vol"),
         ]:
             self.hist_tree.heading(c, text=h)
-            self.hist_tree.column(c, width=64, anchor="center")
+            self.hist_tree.column(c, width=58, anchor="center")
         sb = ttk.Scrollbar(host, orient="vertical", command=self.hist_tree.yview)
         self.hist_tree.configure(yscrollcommand=sb.set)
         self.hist_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         _tag_tree(self.hist_tree)
-        paned.add(table_wrap, width=420, minsize=280)
 
         self.plot_host = ctk.CTkFrame(
-            paned,
+            body,
             fg_color=C["card"],
             corner_radius=12,
             border_width=1,
             border_color=C["border"],
         )
+        self.plot_host.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         ctk.CTkLabel(
             self.plot_host,
-            text="PRICE CHART",
+            text="PRICE CHART  ·  brighter = closer to the money",
             font=_font(10, "bold"),
             text_color=C["cyan"],
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(8, 0))
+        ).pack(fill="x", padx=10, pady=(6, 0))
         self.plot_body = ctk.CTkFrame(self.plot_host, fg_color="transparent")
-        self.plot_body.pack(fill="both", expand=True, padx=4, pady=4)
-        paned.add(self.plot_host, width=720, minsize=360)
+        self.plot_body.pack(fill="both", expand=True, padx=2, pady=2)
         self.plot_placeholder = ctk.CTkLabel(
             self.plot_body,
-            text="Load history to plot call (green) and put (red) prices",
-            font=_font(14),
+            text="Load history to plot call (green) and put (red) prices\n"
+            "ATM strikes are brightest · farther strikes are dimmer",
+            font=_font(13),
             text_color=C["muted"],
+            justify="center",
         )
         self.plot_placeholder.pack(expand=True)
 
@@ -1630,7 +1639,8 @@ class OptionChainApp(ctk.CTk):
                 self.hist_tree.insert("", "end", values=tuple(vals), tags=tags)
 
             try:
-                fig = build_chain_history_figure(result, figsize=(7.2, 6.0))
+                # Larger figure so the right column uses available space
+                fig = build_chain_history_figure(result, figsize=(8.5, 7.0))
                 self._embed_plot(fig)
             except Exception as exc:  # noqa: BLE001
                 self._clear_plot()
