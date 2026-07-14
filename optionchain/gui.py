@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover
 
 from optionchain import __version__
 from optionchain.compare import compare_itm_otm, style_guidance
+from optionchain.display import pcr_sentiment_style
 from optionchain.fetcher import OptionChainError, fetch_option_chain, list_expiries
 from optionchain.filters import apply_filters, select_expiries
 from optionchain.history import fetch_chain_history
@@ -171,14 +172,37 @@ def _style_treeview() -> None:
 
 
 def _tag_tree(tree: ttk.Treeview) -> None:
-    tree.tag_configure("call", foreground=C["green"])
-    tree.tag_configure("put", foreground=C["red"])
-    tree.tag_configure("itm", foreground=C["green"])
-    tree.tag_configure("atm", foreground=C["amber"])
-    tree.tag_configure("otm", foreground=C["red"])
+    # Calls / puts — soft (not neon) so OTM can be darker for contrast
+    tree.tag_configure("call_itm", foreground="#6ee7a8")  # soft green
+    tree.tag_configure("put_itm", foreground="#f0a0a0")  # soft red
+    tree.tag_configure("call_otm", foreground="#4b6358")  # darker muted green
+    tree.tag_configure("put_otm", foreground="#6b4545")  # darker muted red
+    tree.tag_configure("call", foreground="#6ee7a8")
+    tree.tag_configure("put", foreground="#f0a0a0")
+    tree.tag_configure("itm", foreground="#6ee7a8")
+    tree.tag_configure("atm", foreground="#d4a84b")  # softer amber
+    tree.tag_configure("otm", foreground="#5c6b7a")  # darker slate highlight
     tree.tag_configure("alt", background=C["elevated"])
-    tree.tag_configure("up", foreground=C["green"])
-    tree.tag_configure("down", foreground=C["red"])
+    tree.tag_configure("up", foreground="#6ee7a8")
+    tree.tag_configure("down", foreground="#e08080")
+
+
+def _pcr_hex(ratio: float | None) -> tuple[str, str]:
+    """
+    CLI-matching PCR gradient → (background_hex, text_hex).
+    Low PCR = green (optimistic); high = red (cautious).
+    """
+    if ratio is None:
+        return C["elevated"], C["muted"]
+    style = pcr_sentiment_style(ratio)  # "bold rgb(R,G,B)"
+    try:
+        body = style.split("rgb(")[1].rstrip(")")
+        r, g, b = (int(x.strip()) for x in body.split(","))
+    except Exception:
+        return C["elevated"], C["text"]
+    # Darken for chip background, keep bright text
+    br, bg_, bb = max(0, r // 4), max(0, g // 4), max(0, b // 4)
+    return f"#{br:02x}{bg_:02x}{bb:02x}", f"#{r:02x}{g:02x}{b:02x}"
 
 
 class Worker:
@@ -779,17 +803,23 @@ class OptionChainApp(ctk.CTk):
                 self._chain_adv_grid.append((w, info))
         self._set_chain_filters_visible(False)
 
-        # Big-cap picker (preload) + recents
-        picker = ctk.CTkFrame(
-            t,
+        # ── Two-column section: big caps (left) | status + PCR (right) ──
+        two_col = ctk.CTkFrame(t, fg_color="transparent")
+        two_col.pack(fill="x", padx=10, pady=(2, 4))
+        two_col.grid_columnconfigure(0, weight=1, uniform="chain_top")
+        two_col.grid_columnconfigure(1, weight=1, uniform="chain_top")
+
+        # LEFT — big caps
+        left = ctk.CTkFrame(
+            two_col,
             fg_color=C["card"],
             corner_radius=12,
             border_width=1,
             border_color=C["border"],
         )
-        picker.pack(fill="x", padx=10, pady=(2, 4))
-        pick_inner = ctk.CTkFrame(picker, fg_color="transparent")
-        pick_inner.pack(fill="x", padx=12, pady=10)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        pick_inner = ctk.CTkFrame(left, fg_color="transparent")
+        pick_inner.pack(fill="both", expand=True, padx=12, pady=10)
 
         head = ctk.CTkFrame(pick_inner, fg_color="transparent")
         head.pack(fill="x")
@@ -801,54 +831,39 @@ class OptionChainApp(ctk.CTk):
         ).pack(side="left")
         ctk.CTkLabel(
             head,
-            text="  ·  pick one to load chain automatically",
+            text="  ·  click to load",
             font=_font(11),
             text_color=C["muted"],
         ).pack(side="left")
 
-        # Dropdown of all big caps (searchable via typing in combo)
         drop_row = ctk.CTkFrame(pick_inner, fg_color="transparent")
         drop_row.pack(fill="x", pady=(8, 6))
-        ctk.CTkLabel(
-            drop_row,
-            text="Select",
-            font=_font(11, "bold"),
-            text_color=C["muted"],
-        ).pack(side="left", padx=(0, 8))
         self.bigcap_combo = make_combo(
             drop_row,
             values=big_cap_choices(),
-            width=280,
+            width=240,
             placeholder="AAPL — Apple",
         )
-        # Default selection
         default_choice = next(
             (c for c in big_cap_choices() if c.startswith(f"{default_sym} ")),
             big_cap_choices()[0],
         )
         self.bigcap_combo.set(default_choice)
-        self.bigcap_combo.pack(side="left", padx=(0, 10))
-        make_primary_btn(
-            drop_row, "Open", self._on_bigcap_open, width=90
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(
-            drop_row,
-            text="or click a chip below",
-            font=_font(11),
-            text_color=C["muted"],
-        ).pack(side="left", padx=6)
+        self.bigcap_combo.pack(side="left", padx=(0, 8))
+        make_primary_btn(drop_row, "Open", self._on_bigcap_open, width=80).pack(
+            side="left"
+        )
 
-        # Scrollable chip strip of popular names
+        # Chips in a wrapping 2-row feel via horizontal scroll
         self.bigcap_chips = ctk.CTkScrollableFrame(
             pick_inner,
-            height=78,
+            height=88,
             orientation="horizontal",
             fg_color=C["elevated"],
             corner_radius=8,
             border_width=0,
         )
         self.bigcap_chips.pack(fill="x", pady=(2, 0))
-        # Featured first row: mega liquid names
         featured = [
             "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
             "TSLA", "AMD", "JPM", "V", "XOM", "UNH", "WMT", "NFLX",
@@ -863,34 +878,62 @@ class OptionChainApp(ctk.CTk):
                 accent=C["cyan"],
             )
 
-        # Recents chips
-        self.recents_row = ctk.CTkFrame(t, fg_color="transparent")
-        self.recents_row.pack(fill="x", padx=12, pady=(4, 2))
+        # RIGHT — recents + status + PCR
+        right = ctk.CTkFrame(
+            two_col,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+        )
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right_inner = ctk.CTkFrame(right, fg_color="transparent")
+        right_inner.pack(fill="both", expand=True, padx=12, pady=10)
+
+        ctk.CTkLabel(
+            right_inner,
+            text="STATUS  ·  PCR",
+            font=_font(11, "bold"),
+            text_color=C["magenta"],
+            anchor="w",
+        ).pack(fill="x")
+
+        self.recents_row = ctk.CTkFrame(right_inner, fg_color="transparent")
+        self.recents_row.pack(fill="x", pady=(6, 6))
         self._render_recents()
 
-        self.chain_card = InfoCard(t, accent=C["cyan"])
-        self.chain_card.pack(fill="x", padx=10, pady=(4, 4))
+        # Info card without outer pack — nested
+        self.chain_card = InfoCard(right_inner, accent=C["cyan"])
+        self.chain_card.pack(fill="x", pady=(4, 6))
         self.chain_card.set(
-            "Pick a big cap or type a ticker, then Load",
-            "Preloaded liquid names · one click loads nearest expiry + chain. "
-            "Green = call · Red = put.",
+            "Pick a big cap or type a ticker",
+            "Load fills nearest expiry + chain. Soft green/red = ITM · "
+            "darker rows = OTM.",
         )
 
-        self.pcr_row = ctk.CTkFrame(t, fg_color="transparent")
-        self.pcr_row.pack(fill="x", padx=12, pady=(0, 4))
+        self.pcr_row = ctk.CTkFrame(right_inner, fg_color="transparent")
+        self.pcr_row.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(
+            self.pcr_row,
+            text="PCR appears after Load  ·  green=optimistic  amber=balanced  red=cautious",
+            font=_font(11),
+            text_color=C["muted"],
+            anchor="w",
+        ).pack(fill="x")
 
+        # Chain table (no ITM column)
         _, self.chain_tree = self._table_frame(t)
         cols = (
-            "expiry", "type", "strike", "last", "bid", "ask", "vol", "oi", "iv", "itm",
+            "expiry", "type", "strike", "last", "bid", "ask", "vol", "oi", "iv",
         )
         self.chain_tree["columns"] = cols
         heads = {
             "expiry": "Expiry", "type": "Type", "strike": "Strike", "last": "Last",
-            "bid": "Bid", "ask": "Ask", "vol": "Vol", "oi": "OI", "iv": "IV", "itm": "ITM",
+            "bid": "Bid", "ask": "Ask", "vol": "Vol", "oi": "OI", "iv": "IV",
         }
         widths = {
-            "expiry": 100, "type": 60, "strike": 85, "last": 75, "bid": 70,
-            "ask": 70, "vol": 85, "oi": 85, "iv": 75, "itm": 50,
+            "expiry": 110, "type": 70, "strike": 90, "last": 80, "bid": 75,
+            "ask": 75, "vol": 90, "oi": 90, "iv": 80,
         }
         for c in cols:
             self.chain_tree.heading(c, text=heads[c])
@@ -904,32 +947,31 @@ class OptionChainApp(ctk.CTk):
             text="PUT / CALL RATIO",
             font=_font(10, "bold"),
             text_color=C["magenta"],
-        ).pack(side="left", padx=(0, 10))
+        ).pack(side="left", padx=(0, 8))
 
         def chip(label: str, value: str, ratio: float | None) -> None:
-            # Green low PCR (more calls), red high PCR (more puts)
-            if ratio is None:
-                fg, tc = C["elevated"], C["muted"]
-            elif ratio < 0.7:
-                fg, tc = C["green_dim"], C["green"]
-            elif ratio <= 1.0:
-                fg, tc = "#854d0e", C["amber"]
-            else:
-                fg, tc = C["red_dim"], C["red"]
+            # Same green→amber→red gradient as the CLI
+            fg, tc = _pcr_hex(ratio)
             Chip(self.pcr_row, f"{label}  {value}", fg=fg, text_color=tc).pack(
                 side="left", padx=4
             )
 
         vr = "n/a" if vol_ratio is None else f"{vol_ratio:.3f}"
         oi = "n/a" if oi_ratio is None else f"{oi_ratio:.3f}"
-        chip("Volume", vr, vol_ratio)
-        chip("Open interest", oi, oi_ratio)
+        chip("Vol", vr, vol_ratio)
+        chip("OI", oi, oi_ratio)
+        # Mini legend matching CLI
+        leg = ctk.CTkFrame(self.pcr_row, fg_color="transparent")
+        leg.pack(side="left", padx=(10, 0))
+        for text, ratio in (("low", 0.5), ("≈1", 1.0), ("high", 1.8)):
+            fg, tc = _pcr_hex(ratio)
+            Chip(leg, text, fg=fg, text_color=tc).pack(side="left", padx=2)
         ctk.CTkLabel(
             self.pcr_row,
             text=detail,
-            font=_font(11),
+            font=_font(10),
             text_color=C["muted"],
-        ).pack(side="left", padx=12)
+        ).pack(side="left", padx=8)
 
     def _set_chain_filters_visible(self, visible: bool) -> None:
         """Show/hide Near + strike filters (grid columns 3–5)."""
@@ -1158,8 +1200,22 @@ class OptionChainApp(ctk.CTk):
                 iv = float(row.get("impliedVolatility", 0) or 0)
                 iv_s = f"{iv * 100:.1f}%" if iv > 1e-4 else "—"
                 otype_s = str(row.get("type", "")).upper()
-                tag = "call" if otype_s == "CALL" else "put"
-                tags = (tag, "alt") if i % 2 else (tag,)
+                is_call = otype_s == "CALL"
+                # Prefer explicit inTheMoney; fall back to type+strike vs spot
+                if "inTheMoney" in row.index and row.get("inTheMoney") is not None:
+                    is_itm = bool(row.get("inTheMoney"))
+                else:
+                    strike = float(row.get("strike", 0) or 0)
+                    spot = float(payload["spot"] or 0)
+                    is_itm = (
+                        (is_call and strike <= spot) or (not is_call and strike >= spot)
+                    ) if spot > 0 else False
+                # Darker (muted) tags for OTM; softer bright for ITM
+                if is_call:
+                    money_tag = "call_itm" if is_itm else "call_otm"
+                else:
+                    money_tag = "put_itm" if is_itm else "put_otm"
+                tags = (money_tag, "alt") if i % 2 else (money_tag,)
                 self.chain_tree.insert(
                     "",
                     "end",
@@ -1179,7 +1235,6 @@ class OptionChainApp(ctk.CTk):
                         if int(row.get("openInterest", 0) or 0)
                         else "—",
                         iv_s,
-                        "✓" if bool(row.get("inTheMoney")) else "",
                     ),
                     tags=tags,
                 )
