@@ -131,27 +131,24 @@ def print_terminal_plot(
     print("  Tip: save a high-res PNG with  --save  or  --save ./my_chart.png")
 
 
-def save_chain_history_plot(
+def build_chain_history_figure(
     result: ChainHistoryResult,
     *,
-    path: str | Path | None = None,
     title: str | None = None,
-) -> Path:
+    figsize: tuple[float, float] = (10, 6.5),
+):
     """
-    Save a high-resolution call/put chart as PNG (matplotlib).
+    Build a matplotlib Figure for call/put history (for GUI embed or save).
 
-    One green for calls, one red for puts; each line labeled with its strike.
+    Caller owns the figure (close when done if not embedding).
     """
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")  # headless / no window
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
         from matplotlib.lines import Line2D
     except ImportError as exc:
         raise OptionChainError(
-            "Saving plots needs matplotlib.\n"
+            "Plotting needs matplotlib.\n"
             "  Install with:  uv add matplotlib"
         ) from exc
 
@@ -160,7 +157,7 @@ def save_chain_history_plot(
     fig, axes = plt.subplots(
         2,
         1,
-        figsize=(11, 7.5),
+        figsize=figsize,
         sharex=True,
         gridspec_kw={"height_ratios": [3.2, 1.4]},
     )
@@ -179,7 +176,6 @@ def save_chain_history_plot(
                 linewidth=1.8,
                 color=color,
             )
-            # Strike label next to the last point on the line
             ax_opt.annotate(
                 _strike_label(c),
                 xy=(xs[-1], ys[-1]),
@@ -203,7 +199,6 @@ def save_chain_history_plot(
     ax_opt.set_title(chart_title, fontsize=12, pad=10)
     ax_opt.set_ylabel("Option close ($)")
     ax_opt.grid(True, alpha=0.28, linestyle="--")
-    # Single legend entry per type (strikes are on the lines)
     ax_opt.legend(
         handles=[
             Line2D([0], [0], color=CALL_COLOR_HEX, lw=2, label="Calls"),
@@ -247,7 +242,29 @@ def save_chain_history_plot(
         fontsize=8,
         color="#666666",
     )
+    return fig
 
+
+def save_chain_history_plot(
+    result: ChainHistoryResult,
+    *,
+    path: str | Path | None = None,
+    title: str | None = None,
+) -> Path:
+    """
+    Save a high-resolution call/put chart as PNG (matplotlib).
+
+    One green for calls, one red for puts; each line labeled with its strike.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise OptionChainError(
+            "Saving plots needs matplotlib.\n"
+            "  Install with:  uv add matplotlib"
+        ) from exc
+
+    fig = build_chain_history_figure(result, title=title)
     out = Path(path) if path is not None else _default_save_path(result)
     out = out.expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)

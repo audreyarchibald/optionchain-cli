@@ -39,7 +39,28 @@ uv run optionchain --help
 ```bash
 uv tool install .
 optionchain TSLA    # works from any directory
+optionchain-gui     # desktop GUI
 ```
+
+### Desktop GUI
+
+```bash
+uv run optionchain-gui
+```
+
+Tabs mirror the CLI: **Option Chain**, **Top Volume** (+ TradingView export), **History + Chart** (interactive plot), **ITM vs OTM**.
+
+#### Build a standalone app binary (macOS / Windows / Linux)
+
+```bash
+chmod +x scripts/build_gui.sh
+./scripts/build_gui.sh
+```
+
+- **macOS:** `open dist/OptionChain.app`
+- **Linux/Windows:** run `dist/OptionChain` (or `OptionChain.exe`)
+
+Needs internet at runtime (live Yahoo data).
 
 ---
 

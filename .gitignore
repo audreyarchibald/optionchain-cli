@@ -25,3 +25,8 @@ htmlcov/
 *.png
 *.pdf
 *.svg
+
+# PyInstaller
+build/
+dist/
+*.spec

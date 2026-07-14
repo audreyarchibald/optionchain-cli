@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "optionchain-cli"
-version = "1.1.0"
-description = "Beginner-friendly CLI for stock option chains, PCR, history, and ITM vs OTM research"
+version = "1.2.0"
+description = "Beginner-friendly CLI + GUI for stock option chains, PCR, history charts, and ITM vs OTM research"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -29,10 +29,13 @@ dependencies = [
   "requests>=2.31.0",
   "matplotlib>=3.8.0",
   "plotext>=5.3.2",
+  "customtkinter>=6.0.0",
+  "pyinstaller>=6.21.0",
 ]
 
 [project.scripts]
 optionchain = "optionchain.cli:main"
+optionchain-gui = "optionchain.gui:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
