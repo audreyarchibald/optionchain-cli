@@ -33,6 +33,12 @@ from optionchain.history import fetch_chain_history
 from optionchain.leaders import fetch_option_volume_leaders
 from optionchain.metrics import compute_put_call_ratio
 from optionchain.plotting import build_chain_history_figure, save_chain_history_plot
+from optionchain.universe import (
+    BIG_CAP_SYMBOLS,
+    BIG_CAPS,
+    big_cap_choices,
+    parse_big_cap_choice,
+)
 from optionchain.watchlist import export_tradingview_watchlist
 
 try:
@@ -773,17 +779,101 @@ class OptionChainApp(ctk.CTk):
                 self._chain_adv_grid.append((w, info))
         self._set_chain_filters_visible(False)
 
+        # Big-cap picker (preload) + recents
+        picker = ctk.CTkFrame(
+            t,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+        )
+        picker.pack(fill="x", padx=10, pady=(2, 4))
+        pick_inner = ctk.CTkFrame(picker, fg_color="transparent")
+        pick_inner.pack(fill="x", padx=12, pady=10)
+
+        head = ctk.CTkFrame(pick_inner, fg_color="transparent")
+        head.pack(fill="x")
+        ctk.CTkLabel(
+            head,
+            text="BIG CAPS",
+            font=_font(11, "bold"),
+            text_color=C["cyan"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            head,
+            text="  ·  pick one to load chain automatically",
+            font=_font(11),
+            text_color=C["muted"],
+        ).pack(side="left")
+
+        # Dropdown of all big caps (searchable via typing in combo)
+        drop_row = ctk.CTkFrame(pick_inner, fg_color="transparent")
+        drop_row.pack(fill="x", pady=(8, 6))
+        ctk.CTkLabel(
+            drop_row,
+            text="Select",
+            font=_font(11, "bold"),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(0, 8))
+        self.bigcap_combo = make_combo(
+            drop_row,
+            values=big_cap_choices(),
+            width=280,
+            placeholder="AAPL — Apple",
+        )
+        # Default selection
+        default_choice = next(
+            (c for c in big_cap_choices() if c.startswith(f"{default_sym} ")),
+            big_cap_choices()[0],
+        )
+        self.bigcap_combo.set(default_choice)
+        self.bigcap_combo.pack(side="left", padx=(0, 10))
+        make_primary_btn(
+            drop_row, "Open", self._on_bigcap_open, width=90
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            drop_row,
+            text="or click a chip below",
+            font=_font(11),
+            text_color=C["muted"],
+        ).pack(side="left", padx=6)
+
+        # Scrollable chip strip of popular names
+        self.bigcap_chips = ctk.CTkScrollableFrame(
+            pick_inner,
+            height=78,
+            orientation="horizontal",
+            fg_color=C["elevated"],
+            corner_radius=8,
+            border_width=0,
+        )
+        self.bigcap_chips.pack(fill="x", pady=(2, 0))
+        # Featured first row: mega liquid names
+        featured = [
+            "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
+            "TSLA", "AMD", "JPM", "V", "XOM", "UNH", "WMT", "NFLX",
+        ]
+        for sym in featured:
+            if sym not in BIG_CAP_SYMBOLS:
+                continue
+            self._make_symbol_chip(
+                self.bigcap_chips,
+                sym,
+                command=lambda s=sym: self._open_symbol_in_chain(s, auto_load=True),
+                accent=C["cyan"],
+            )
+
         # Recents chips
         self.recents_row = ctk.CTkFrame(t, fg_color="transparent")
-        self.recents_row.pack(fill="x", padx=12, pady=(0, 2))
+        self.recents_row.pack(fill="x", padx=12, pady=(4, 2))
         self._render_recents()
 
         self.chain_card = InfoCard(t, accent=C["cyan"])
         self.chain_card.pack(fill="x", padx=10, pady=(4, 4))
         self.chain_card.set(
-            "Enter a ticker and press Load (or Enter)",
-            "One click loads nearest expiry + chain. Green = call · Red = put. "
-            "Double-click a Top Volume row to open it here.",
+            "Pick a big cap or type a ticker, then Load",
+            "Preloaded liquid names · one click loads nearest expiry + chain. "
+            "Green = call · Red = put.",
         )
 
         self.pcr_row = ctk.CTkFrame(t, fg_color="transparent")
@@ -862,6 +952,30 @@ class OptionChainApp(ctk.CTk):
     def _toggle_chain_filters(self) -> None:
         self._set_chain_filters_visible(not self._chain_adv_open)
 
+    def _make_symbol_chip(
+        self,
+        master: Any,
+        symbol: str,
+        *,
+        command: Callable[[], Any],
+        accent: str = C["cyan"],
+    ) -> None:
+        btn = ctk.CTkButton(
+            master,
+            text=symbol,
+            width=68,
+            height=30,
+            corner_radius=8,
+            font=_font(12, "bold"),
+            fg_color=C["dropdown_bg"],
+            hover_color=C["cyan_dim"],
+            text_color=accent,
+            border_width=1,
+            border_color=C["border"],
+            command=command,
+        )
+        btn.pack(side="left", padx=4, pady=6)
+
     def _render_recents(self) -> None:
         for w in self.recents_row.winfo_children():
             w.destroy()
@@ -879,26 +993,46 @@ class OptionChainApp(ctk.CTk):
                 text_color=C["muted"],
             ).pack(side="left")
             return
-        for sym in self._recents[:8]:
-            btn = ctk.CTkButton(
+        for sym in self._recents[:10]:
+            self._make_symbol_chip(
                 self.recents_row,
-                text=sym,
-                width=64,
-                height=26,
-                corner_radius=6,
-                font=_font(11, "bold"),
-                fg_color=C["elevated"],
-                hover_color=C["cyan_dim"],
-                text_color=C["cyan"],
-                command=lambda s=sym: self._open_symbol_in_chain(s),
+                sym,
+                command=lambda s=sym: self._open_symbol_in_chain(s, auto_load=True),
+                accent=C["amber"],
             )
-            btn.pack(side="left", padx=3)
+
+    def _on_bigcap_open(self) -> None:
+        choice = self.bigcap_combo.get()
+        sym = parse_big_cap_choice(choice)
+        if not sym:
+            messagebox.showwarning("OptionChain", "Pick a stock from the list.")
+            return
+        self._open_symbol_in_chain(sym, auto_load=True)
 
     def _open_symbol_in_chain(self, symbol: str, *, auto_load: bool = True) -> None:
         """Switch to Chain tab and optionally load the symbol."""
         self.tabs.set("  📊  Chain  ")
+        sym = symbol.strip().upper()
         self.chain_symbol.delete(0, "end")
-        self.chain_symbol.insert(0, symbol.strip().upper())
+        self.chain_symbol.insert(0, sym)
+        # Keep big-cap dropdown in sync when possible
+        if hasattr(self, "bigcap_combo"):
+            match = next(
+                (c for c in big_cap_choices() if c.startswith(f"{sym} ")),
+                None,
+            )
+            if match:
+                try:
+                    self.bigcap_combo.set(match)
+                except Exception:
+                    pass
+        # Sync other tabs' symbol fields for Chart/Compare shortcuts
+        if hasattr(self, "hist_symbol"):
+            self.hist_symbol.delete(0, "end")
+            self.hist_symbol.insert(0, sym)
+        if hasattr(self, "cmp_symbol"):
+            self.cmp_symbol.delete(0, "end")
+            self.cmp_symbol.insert(0, sym)
         if auto_load:
             self._chain_load()
 
@@ -1633,6 +1767,7 @@ class OptionChainApp(ctk.CTk):
 
 Automation
 ──────────
+  • Big-cap list preloaded (dropdown + chips) — one click loads chain
   • Chain: one Load button (expiries + chain together)
   • Press Enter in Symbol to load
   • Changing Type or Expiry reloads automatically
