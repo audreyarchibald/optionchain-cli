@@ -1,9 +1,8 @@
 """
-Desktop GUI for optionchain — every CLI feature, with embedded charts.
+Desktop GUI for optionchain — colorful, readable, every CLI feature + charts.
 
 Run:
   uv run optionchain-gui
-  python -m optionchain.gui
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
@@ -35,7 +33,6 @@ from optionchain.metrics import compute_put_call_ratio
 from optionchain.plotting import build_chain_history_figure, save_chain_history_plot
 from optionchain.watchlist import export_tradingview_watchlist
 
-# Optional matplotlib backend for embedding
 try:
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
     from matplotlib.figure import Figure
@@ -44,51 +41,45 @@ try:
 except Exception:  # pragma: no cover
     _HAS_MPL = False
 
+# ── Design tokens (match CLI: cyan headers, green calls, red puts) ──────────
+C = {
+    "bg": "#0b1220",
+    "surface": "#121a2b",
+    "card": "#172033",
+    "elevated": "#1e2a40",
+    "border": "#2a3a55",
+    "text": "#f1f5f9",
+    "muted": "#94a3b8",
+    "cyan": "#22d3ee",
+    "cyan_dim": "#0e7490",
+    "green": "#4ade80",
+    "green_dim": "#166534",
+    "red": "#f87171",
+    "red_dim": "#991b1b",
+    "amber": "#fbbf24",
+    "magenta": "#e879f9",
+    "blue": "#38bdf8",
+    "btn": "#0ea5e9",
+    "btn_hover": "#0284c7",
+    "btn_secondary": "#334155",
+    "btn_secondary_hover": "#475569",
+    "success": "#22c55e",
+    "input_bg": "#0f172a",
+    "dropdown_bg": "#1e293b",
+    "dropdown_hover": "#334155",
+    "white": "#ffffff",
+}
+
+FONT = "Helvetica"
+# On macOS SF Pro often missing in tk; Helvetica is reliable + readable
+FONT_MONO = "Menlo"
 
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("dark-blue")
 
 DISCLAIMER = (
-    "Research tool only — not financial advice. Data from Yahoo Finance via yfinance."
+    "Research only · not financial advice · data via Yahoo Finance"
 )
-
-
-class Worker:
-    """Run blocking work off the UI thread; deliver results via a queue."""
-
-    def __init__(self, root: ctk.CTk) -> None:
-        self.root = root
-        self.q: queue.Queue[tuple[str, Any]] = queue.Queue()
-        self._poll()
-
-    def _poll(self) -> None:
-        try:
-            while True:
-                kind, payload = self.q.get_nowait()
-                if kind == "ok":
-                    callback, result = payload
-                    callback(result)
-                elif kind == "err":
-                    callback, err = payload
-                    callback(err)
-        except queue.Empty:
-            pass
-        self.root.after(80, self._poll)
-
-    def submit(
-        self,
-        fn: Callable[[], Any],
-        on_ok: Callable[[Any], None],
-        on_err: Callable[[BaseException], None],
-    ) -> None:
-        def runner() -> None:
-            try:
-                result = fn()
-                self.q.put(("ok", (on_ok, result)))
-            except BaseException as exc:  # noqa: BLE001 — surface to UI
-                self.q.put(("err", (on_err, exc)))
-
-        threading.Thread(target=runner, daemon=True).start()
 
 
 def _err_text(exc: BaseException) -> str:
@@ -102,6 +93,10 @@ def _tree_clear(tree: ttk.Treeview) -> None:
         tree.delete(item)
 
 
+def _font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
+    return ctk.CTkFont(family=FONT, size=size, weight=weight)
+
+
 def _style_treeview() -> None:
     style = ttk.Style()
     try:
@@ -109,89 +104,430 @@ def _style_treeview() -> None:
     except tk.TclError:
         pass
     style.configure(
-        "Treeview",
-        background="#1e1e1e",
-        foreground="#e8e8e8",
-        fieldbackground="#1e1e1e",
-        rowheight=26,
+        "App.Treeview",
+        background=C["card"],
+        foreground=C["text"],
+        fieldbackground=C["card"],
+        rowheight=30,
         borderwidth=0,
-        font=("SF Pro Text", 12) if ctk.get_appearance_mode() else ("Segoe UI", 11),
+        font=(FONT, 12),
     )
     style.configure(
-        "Treeview.Heading",
-        background="#2b2b2b",
-        foreground="#ffffff",
+        "App.Treeview.Heading",
+        background=C["elevated"],
+        foreground=C["cyan"],
         relief="flat",
-        font=("SF Pro Text", 12, "bold"),
+        borderwidth=0,
+        font=(FONT, 12, "bold"),
+        padding=6,
     )
-    style.map("Treeview", background=[("selected", "#1f6aa5")])
+    style.map(
+        "App.Treeview",
+        background=[("selected", C["cyan_dim"])],
+        foreground=[("selected", C["white"])],
+    )
+    style.map(
+        "App.Treeview.Heading",
+        background=[("active", C["border"])],
+        foreground=[("active", C["cyan"])],
+    )
+    # Tag colors for call/put/styles
+    # Applied per-tree via tag_configure after creation
+
+
+def _tag_tree(tree: ttk.Treeview) -> None:
+    tree.tag_configure("call", foreground=C["green"])
+    tree.tag_configure("put", foreground=C["red"])
+    tree.tag_configure("itm", foreground=C["green"])
+    tree.tag_configure("atm", foreground=C["amber"])
+    tree.tag_configure("otm", foreground=C["red"])
+    tree.tag_configure("alt", background=C["elevated"])
+    tree.tag_configure("up", foreground=C["green"])
+    tree.tag_configure("down", foreground=C["red"])
+
+
+class Worker:
+    def __init__(self, root: ctk.CTk) -> None:
+        self.root = root
+        self.q: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._poll()
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                kind, payload = self.q.get_nowait()
+                if kind == "ok":
+                    cb, result = payload
+                    cb(result)
+                else:
+                    cb, err = payload
+                    cb(err)
+        except queue.Empty:
+            pass
+        self.root.after(80, self._poll)
+
+    def submit(
+        self,
+        fn: Callable[[], Any],
+        on_ok: Callable[[Any], None],
+        on_err: Callable[[BaseException], None],
+    ) -> None:
+        def runner() -> None:
+            try:
+                self.q.put(("ok", (on_ok, fn())))
+            except BaseException as exc:  # noqa: BLE001
+                self.q.put(("err", (on_err, exc)))
+
+        threading.Thread(target=runner, daemon=True).start()
+
+
+# ── Reusable widgets ────────────────────────────────────────────────────────
+
+
+class Field(ctk.CTkFrame):
+    """Labeled control stack — label on top, widget below (fixes cramped rows)."""
+
+    def __init__(
+        self,
+        master: Any,
+        label: str,
+        widget: ctk.CTkBaseClass,
+        *,
+        label_color: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        ctk.CTkLabel(
+            self,
+            text=label.upper(),
+            font=_font(10, "bold"),
+            text_color=label_color or C["muted"],
+            anchor="w",
+        ).pack(fill="x", pady=(0, 3))
+        widget.pack(fill="x")
+        self.widget = widget
+
+
+def make_entry(
+    master: Any,
+    *,
+    width: int = 120,
+    placeholder: str = "",
+    text: str = "",
+) -> ctk.CTkEntry:
+    e = ctk.CTkEntry(
+        master,
+        width=width,
+        height=36,
+        corner_radius=8,
+        border_width=1,
+        border_color=C["border"],
+        fg_color=C["input_bg"],
+        text_color=C["text"],
+        placeholder_text_color=C["muted"],
+        placeholder_text=placeholder,
+        font=_font(13),
+    )
+    if text:
+        e.insert(0, text)
+    return e
+
+
+def make_option_menu(
+    master: Any,
+    values: list[str],
+    *,
+    width: int = 130,
+    default: str | None = None,
+    command: Callable[[str], Any] | None = None,
+) -> ctk.CTkOptionMenu:
+    """Option menu with explicit high-contrast colors (fixes blank text)."""
+    menu = ctk.CTkOptionMenu(
+        master,
+        values=values,
+        width=width,
+        height=36,
+        corner_radius=8,
+        font=_font(13, "bold"),
+        dropdown_font=_font(13),
+        fg_color=C["dropdown_bg"],
+        button_color=C["btn_secondary"],
+        button_hover_color=C["btn_secondary_hover"],
+        text_color=C["white"],
+        text_color_disabled=C["muted"],
+        dropdown_fg_color=C["elevated"],
+        dropdown_hover_color=C["cyan_dim"],
+        dropdown_text_color=C["white"],
+        anchor="center",
+        dynamic_resizing=False,
+        command=command,
+    )
+    menu.set(default if default is not None else values[0])
+    return menu
+
+
+def make_combo(
+    master: Any,
+    values: list[str] | None = None,
+    *,
+    width: int = 140,
+    placeholder: str = "",
+) -> ctk.CTkComboBox:
+    box = ctk.CTkComboBox(
+        master,
+        values=values or [""],
+        width=width,
+        height=36,
+        corner_radius=8,
+        border_width=1,
+        border_color=C["border"],
+        fg_color=C["input_bg"],
+        button_color=C["btn_secondary"],
+        button_hover_color=C["btn_secondary_hover"],
+        dropdown_fg_color=C["elevated"],
+        dropdown_hover_color=C["cyan_dim"],
+        dropdown_text_color=C["white"],
+        text_color=C["text"],
+        font=_font(13),
+        dropdown_font=_font(13),
+        state="normal",
+    )
+    if placeholder:
+        box.set(placeholder)
+    elif values:
+        box.set(values[0])
+    return box
+
+
+def make_primary_btn(
+    master: Any, text: str, command: Callable[[], Any], *, width: int = 130
+) -> ctk.CTkButton:
+    return ctk.CTkButton(
+        master,
+        text=text,
+        command=command,
+        width=width,
+        height=36,
+        corner_radius=8,
+        font=_font(13, "bold"),
+        fg_color=C["btn"],
+        hover_color=C["btn_hover"],
+        text_color=C["white"],
+    )
+
+
+def make_secondary_btn(
+    master: Any, text: str, command: Callable[[], Any], *, width: int = 140
+) -> ctk.CTkButton:
+    return ctk.CTkButton(
+        master,
+        text=text,
+        command=command,
+        width=width,
+        height=36,
+        corner_radius=8,
+        font=_font(12, "bold"),
+        fg_color=C["btn_secondary"],
+        hover_color=C["btn_secondary_hover"],
+        text_color=C["text"],
+        border_width=1,
+        border_color=C["border"],
+    )
+
+
+def make_accent_btn(
+    master: Any,
+    text: str,
+    command: Callable[[], Any],
+    *,
+    color: str,
+    hover: str,
+    width: int = 150,
+) -> ctk.CTkButton:
+    return ctk.CTkButton(
+        master,
+        text=text,
+        command=command,
+        width=width,
+        height=36,
+        corner_radius=8,
+        font=_font(12, "bold"),
+        fg_color=color,
+        hover_color=hover,
+        text_color=C["white"],
+    )
+
+
+class InfoCard(ctk.CTkFrame):
+    """Colored left-border card for status / PCR / summaries."""
+
+    def __init__(
+        self,
+        master: Any,
+        *,
+        accent: str = C["cyan"],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            master,
+            fg_color=C["card"],
+            corner_radius=10,
+            border_width=0,
+            **kwargs,
+        )
+        self._bar = ctk.CTkFrame(self, width=5, fg_color=accent, corner_radius=0)
+        self._bar.pack(side="left", fill="y")
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.pack(side="left", fill="both", expand=True, padx=12, pady=10)
+        self.title_lbl = ctk.CTkLabel(
+            self.body,
+            text="",
+            font=_font(14, "bold"),
+            text_color=C["text"],
+            anchor="w",
+        )
+        self.title_lbl.pack(fill="x")
+        self.sub_lbl = ctk.CTkLabel(
+            self.body,
+            text="",
+            font=_font(12),
+            text_color=C["muted"],
+            anchor="w",
+            justify="left",
+            wraplength=900,
+        )
+        self.sub_lbl.pack(fill="x", pady=(2, 0))
+
+    def set_accent(self, color: str) -> None:
+        self._bar.configure(fg_color=color)
+
+    def set(self, title: str, subtitle: str = "") -> None:
+        self.title_lbl.configure(text=title)
+        self.sub_lbl.configure(text=subtitle)
+
+
+class Chip(ctk.CTkFrame):
+    """Small colored badge (e.g. PCR value)."""
+
+    def __init__(
+        self,
+        master: Any,
+        text: str,
+        *,
+        fg: str = C["elevated"],
+        text_color: str = C["text"],
+    ) -> None:
+        super().__init__(master, fg_color=fg, corner_radius=6)
+        ctk.CTkLabel(
+            self,
+            text=text,
+            font=_font(11, "bold"),
+            text_color=text_color,
+        ).pack(padx=10, pady=5)
 
 
 class StatusBar(ctk.CTkFrame):
     def __init__(self, master: Any, **kwargs: Any) -> None:
-        super().__init__(master, height=32, **kwargs)
-        self.label = ctk.CTkLabel(self, text=DISCLAIMER, anchor="w")
-        self.label.pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        self.busy = ctk.CTkProgressBar(self, width=120, mode="indeterminate")
+        super().__init__(
+            master,
+            height=36,
+            fg_color=C["surface"],
+            corner_radius=0,
+            **kwargs,
+        )
+        self.dot = ctk.CTkLabel(self, text="●", text_color=C["green"], width=16)
+        self.dot.pack(side="left", padx=(12, 4))
+        self.label = ctk.CTkLabel(
+            self,
+            text=DISCLAIMER,
+            font=_font(11),
+            text_color=C["muted"],
+            anchor="w",
+        )
+        self.label.pack(side="left", fill="x", expand=True, pady=6)
+        self.busy = ctk.CTkProgressBar(
+            self,
+            width=140,
+            height=8,
+            mode="indeterminate",
+            progress_color=C["cyan"],
+            fg_color=C["elevated"],
+        )
         self._busy = False
 
-    def set_message(self, text: str) -> None:
+    def set_message(self, text: str, *, ok: bool = True) -> None:
         self.label.configure(text=text)
+        self.dot.configure(text_color=C["green"] if ok else C["amber"])
 
     def start_busy(self, text: str = "Loading…") -> None:
-        self.set_message(text)
+        self.set_message(text, ok=True)
+        self.dot.configure(text_color=C["cyan"])
         if not self._busy:
-            self.busy.pack(side="right", padx=10, pady=6)
+            self.busy.pack(side="right", padx=12, pady=10)
             self.busy.start()
             self._busy = True
 
-    def stop_busy(self, text: str | None = None) -> None:
+    def stop_busy(self, text: str | None = None, *, ok: bool = True) -> None:
         if self._busy:
             self.busy.stop()
             self.busy.pack_forget()
             self._busy = False
         if text is not None:
-            self.set_message(text)
+            self.set_message(text, ok=ok)
 
 
 class OptionChainApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"OptionChain  v{__version__}")
-        self.geometry("1180x780")
-        self.minsize(960, 640)
+        self.geometry("1240x820")
+        self.minsize(1020, 680)
+        self.configure(fg_color=C["bg"])
 
         self.worker = Worker(self)
         _style_treeview()
 
-        # last results for export / re-plot
         self._leaders_result = None
         self._history_result = None
         self._plot_canvas: Any = None
         self._plot_toolbar: Any = None
         self._plot_fig: Figure | None = None
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=16, pady=(12, 4))
-        ctk.CTkLabel(
-            header,
-            text="OptionChain",
-            font=ctk.CTkFont(size=22, weight="bold"),
-        ).pack(side="left")
-        ctk.CTkLabel(
-            header,
-            text="  Chains · Top volume · History charts · ITM vs OTM",
-            text_color=("gray40", "gray70"),
-        ).pack(side="left", padx=8)
+        self._build_header()
+        self.tabs = ctk.CTkTabview(
+            self,
+            fg_color=C["surface"],
+            segmented_button_fg_color=C["elevated"],
+            segmented_button_selected_color=C["cyan_dim"],
+            segmented_button_selected_hover_color=C["cyan"],
+            segmented_button_unselected_color=C["elevated"],
+            segmented_button_unselected_hover_color=C["border"],
+            text_color=C["text"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+        )
+        self.tabs.pack(fill="both", expand=True, padx=14, pady=(4, 8))
+        # Larger tab labels
+        try:
+            self.tabs._segmented_button.configure(font=_font(13, "bold"))  # noqa: SLF001
+        except Exception:
+            pass
 
-        self.tabs = ctk.CTkTabview(self)
-        self.tabs.pack(fill="both", expand=True, padx=12, pady=8)
+        self.tab_chain = self.tabs.add("  📊  Chain  ")
+        self.tab_top = self.tabs.add("  🔥  Top Volume  ")
+        self.tab_history = self.tabs.add("  📈  History + Chart  ")
+        self.tab_compare = self.tabs.add("  ⚖️  ITM vs OTM  ")
+        self.tab_help = self.tabs.add("  ❓  Help  ")
 
-        self.tab_chain = self.tabs.add("Option Chain")
-        self.tab_top = self.tabs.add("Top Volume")
-        self.tab_history = self.tabs.add("History + Chart")
-        self.tab_compare = self.tabs.add("ITM vs OTM")
-        self.tab_help = self.tabs.add("Help")
+        for tab in (
+            self.tab_chain,
+            self.tab_top,
+            self.tab_history,
+            self.tab_compare,
+            self.tab_help,
+        ):
+            tab.configure(fg_color=C["surface"])
 
         self._build_chain_tab()
         self._build_top_tab()
@@ -202,7 +538,57 @@ class OptionChainApp(ctk.CTk):
         self.status = StatusBar(self)
         self.status.pack(fill="x", side="bottom")
 
-    # ── helpers ──────────────────────────────────────────────
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(self, fg_color=C["bg"], height=64)
+        header.pack(fill="x", padx=14, pady=(12, 0))
+        header.pack_propagate(False)
+
+        left = ctk.CTkFrame(header, fg_color="transparent")
+        left.pack(side="left", fill="y")
+        title_row = ctk.CTkFrame(left, fg_color="transparent")
+        title_row.pack(anchor="w")
+        ctk.CTkLabel(
+            title_row,
+            text="OptionChain",
+            font=_font(24, "bold"),
+            text_color=C["cyan"],
+        ).pack(side="left")
+        badge = ctk.CTkFrame(title_row, fg_color=C["cyan_dim"], corner_radius=6)
+        badge.pack(side="left", padx=10)
+        ctk.CTkLabel(
+            badge,
+            text=f"v{__version__}",
+            font=_font(11, "bold"),
+            text_color=C["cyan"],
+            padx=8,
+            pady=2,
+        ).pack()
+        ctk.CTkLabel(
+            left,
+            text="Live option chains · volume leaders · multi-day charts · ITM/OTM research",
+            font=_font(12),
+            text_color=C["muted"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        legend = ctk.CTkFrame(header, fg_color="transparent")
+        legend.pack(side="right", padx=4)
+        for text, color in (
+            ("CALLS", C["green"]),
+            ("PUTS", C["red"]),
+            ("ATM", C["amber"]),
+            ("PCR", C["magenta"]),
+        ):
+            chip = ctk.CTkFrame(legend, fg_color=C["card"], corner_radius=8)
+            chip.pack(side="left", padx=4)
+            ctk.CTkLabel(
+                chip,
+                text=f"● {text}",
+                font=_font(11, "bold"),
+                text_color=color,
+                padx=10,
+                pady=6,
+            ).pack()
+
     def _run(
         self,
         fn: Callable[[], Any],
@@ -212,88 +598,145 @@ class OptionChainApp(ctk.CTk):
         self.status.start_busy(busy)
 
         def ok(result: Any) -> None:
-            self.status.stop_busy("Ready.")
+            self.status.stop_busy("Ready · research only")
             on_ok(result)
 
         def err(exc: BaseException) -> None:
-            self.status.stop_busy("Error.")
+            self.status.stop_busy("Error", ok=False)
             messagebox.showerror("OptionChain", _err_text(exc))
 
         self.worker.submit(fn, ok, err)
 
-    # ── Tab: Option Chain ────────────────────────────────────
+    def _toolbar(self, parent: Any) -> ctk.CTkFrame:
+        bar = ctk.CTkFrame(
+            parent,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+        )
+        bar.pack(fill="x", padx=10, pady=(10, 6))
+        inner = ctk.CTkFrame(bar, fg_color="transparent")
+        inner.pack(fill="x", padx=12, pady=12)
+        return inner
+
+    def _table_frame(self, parent: Any) -> tuple[ctk.CTkFrame, ttk.Treeview]:
+        wrap = ctk.CTkFrame(
+            parent,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+        )
+        wrap.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        host = tk.Frame(wrap, bg=C["card"], highlightthickness=0)
+        host.pack(fill="both", expand=True, padx=8, pady=8)
+        tree = ttk.Treeview(host, show="headings", style="App.Treeview")
+        sb = ttk.Scrollbar(host, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        _tag_tree(tree)
+        return wrap, tree
+
+    # ── Chain ────────────────────────────────────────────────
     def _build_chain_tab(self) -> None:
         t = self.tab_chain
-        controls = ctk.CTkFrame(t)
-        controls.pack(fill="x", padx=8, pady=8)
+        bar = self._toolbar(t)
 
-        self.chain_symbol = ctk.CTkEntry(controls, width=100, placeholder_text="TSLA")
-        self.chain_symbol.insert(0, "TSLA")
-        self.chain_type = ctk.CTkOptionMenu(
-            controls, values=["all", "call", "put"], width=90
+        self.chain_symbol = make_entry(bar, width=110, text="TSLA", placeholder="Ticker")
+        self.chain_type = make_option_menu(bar, ["all", "call", "put"], width=110, default="all")
+        self.chain_expiry = make_combo(bar, [""], width=150, placeholder="Pick expiry")
+        self.chain_near = make_entry(bar, width=70, text="8", placeholder="Near")
+        self.chain_smin = make_entry(bar, width=80, placeholder="Min")
+        self.chain_smax = make_entry(bar, width=80, placeholder="Max")
+
+        Field(bar, "Symbol", self.chain_symbol, label_color=C["cyan"]).pack(
+            side="left", padx=(0, 10)
         )
-        self.chain_type.set("all")
-        self.chain_expiry = ctk.CTkComboBox(controls, values=[""], width=130)
-        self.chain_expiry.set("")
-        self.chain_near = ctk.CTkEntry(controls, width=60, placeholder_text="8")
-        self.chain_near.insert(0, "8")
-        self.chain_smin = ctk.CTkEntry(controls, width=70, placeholder_text="min")
-        self.chain_smax = ctk.CTkEntry(controls, width=70, placeholder_text="max")
+        Field(bar, "Type", self.chain_type, label_color=C["green"]).pack(
+            side="left", padx=(0, 10)
+        )
+        Field(bar, "Expiry", self.chain_expiry, label_color=C["amber"]).pack(
+            side="left", padx=(0, 10)
+        )
+        Field(bar, "Near ATM", self.chain_near).pack(side="left", padx=(0, 10))
+        Field(bar, "Strike ≥", self.chain_smin).pack(side="left", padx=(0, 10))
+        Field(bar, "Strike ≤", self.chain_smax).pack(side="left", padx=(0, 10))
 
-        def add(lbl: str, w: Any) -> None:
-            ctk.CTkLabel(controls, text=lbl).pack(side="left", padx=(8, 2))
-            w.pack(side="left", padx=2)
+        actions = ctk.CTkFrame(bar, fg_color="transparent")
+        actions.pack(side="right", padx=(8, 0))
+        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()  # align with fields
+        btn_row = ctk.CTkFrame(actions, fg_color="transparent")
+        btn_row.pack()
+        make_secondary_btn(btn_row, "Load expiries", self._chain_load_expiries, width=120).pack(
+            side="left", padx=4
+        )
+        make_primary_btn(btn_row, "Load chain", self._chain_load, width=120).pack(
+            side="left", padx=4
+        )
 
-        add("Symbol", self.chain_symbol)
-        add("Type", self.chain_type)
-        add("Expiry", self.chain_expiry)
-        add("Near", self.chain_near)
-        add("Strike≥", self.chain_smin)
-        add("Strike≤", self.chain_smax)
+        self.chain_card = InfoCard(t, accent=C["cyan"])
+        self.chain_card.pack(fill="x", padx=10, pady=(4, 4))
+        self.chain_card.set(
+            "Enter a ticker",
+            "Load expiries → pick a date → Load chain. Green = call · Red = put.",
+        )
 
-        ctk.CTkButton(
-            controls, text="Load expiries", width=110, command=self._chain_load_expiries
-        ).pack(side="left", padx=6)
-        ctk.CTkButton(
-            controls, text="Load chain", width=110, fg_color="#1f6aa5",
-            command=self._chain_load,
-        ).pack(side="left", padx=4)
+        self.pcr_row = ctk.CTkFrame(t, fg_color="transparent")
+        self.pcr_row.pack(fill="x", padx=12, pady=(0, 4))
 
-        self.chain_info = ctk.CTkLabel(t, text="Enter a ticker and load the chain.", anchor="w")
-        self.chain_info.pack(fill="x", padx=12)
-
-        self.chain_pcr = ctk.CTkLabel(t, text="", anchor="w", justify="left")
-        self.chain_pcr.pack(fill="x", padx=12, pady=(0, 4))
-
-        frame = ctk.CTkFrame(t)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        _, self.chain_tree = self._table_frame(t)
         cols = (
             "expiry", "type", "strike", "last", "bid", "ask", "vol", "oi", "iv", "itm",
         )
-        self.chain_tree = ttk.Treeview(frame, columns=cols, show="headings", height=18)
-        headings = {
-            "expiry": "Expiry",
-            "type": "Type",
-            "strike": "Strike",
-            "last": "Last",
-            "bid": "Bid",
-            "ask": "Ask",
-            "vol": "Vol",
-            "oi": "OI",
-            "iv": "IV",
-            "itm": "ITM",
+        self.chain_tree["columns"] = cols
+        heads = {
+            "expiry": "Expiry", "type": "Type", "strike": "Strike", "last": "Last",
+            "bid": "Bid", "ask": "Ask", "vol": "Vol", "oi": "OI", "iv": "IV", "itm": "ITM",
         }
         widths = {
-            "expiry": 100, "type": 55, "strike": 80, "last": 70, "bid": 70,
-            "ask": 70, "vol": 80, "oi": 80, "iv": 70, "itm": 45,
+            "expiry": 100, "type": 60, "strike": 85, "last": 75, "bid": 70,
+            "ask": 70, "vol": 85, "oi": 85, "iv": 75, "itm": 50,
         }
         for c in cols:
-            self.chain_tree.heading(c, text=headings[c])
+            self.chain_tree.heading(c, text=heads[c])
             self.chain_tree.column(c, width=widths[c], anchor="center")
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.chain_tree.yview)
-        self.chain_tree.configure(yscrollcommand=sb.set)
-        self.chain_tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+
+    def _set_pcr_chips(self, vol_ratio: float | None, oi_ratio: float | None, detail: str) -> None:
+        for w in self.pcr_row.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(
+            self.pcr_row,
+            text="PUT / CALL RATIO",
+            font=_font(10, "bold"),
+            text_color=C["magenta"],
+        ).pack(side="left", padx=(0, 10))
+
+        def chip(label: str, value: str, ratio: float | None) -> None:
+            # Green low PCR (more calls), red high PCR (more puts)
+            if ratio is None:
+                fg, tc = C["elevated"], C["muted"]
+            elif ratio < 0.7:
+                fg, tc = C["green_dim"], C["green"]
+            elif ratio <= 1.0:
+                fg, tc = "#854d0e", C["amber"]
+            else:
+                fg, tc = C["red_dim"], C["red"]
+            Chip(self.pcr_row, f"{label}  {value}", fg=fg, text_color=tc).pack(
+                side="left", padx=4
+            )
+
+        vr = "n/a" if vol_ratio is None else f"{vol_ratio:.3f}"
+        oi = "n/a" if oi_ratio is None else f"{oi_ratio:.3f}"
+        chip("Volume", vr, vol_ratio)
+        chip("Open interest", oi, oi_ratio)
+        ctk.CTkLabel(
+            self.pcr_row,
+            text=detail,
+            font=_font(11),
+            text_color=C["muted"],
+        ).pack(side="left", padx=12)
 
     def _chain_load_expiries(self) -> None:
         sym = self.chain_symbol.get().strip()
@@ -309,9 +752,11 @@ class OptionChainApp(ctk.CTk):
             self.chain_expiry.configure(values=expiries or [""])
             if expiries:
                 self.chain_expiry.set(expiries[0])
-            self.chain_info.configure(
-                text=f"{sym.upper()}: {len(expiries)} expiries loaded. Pick one and Load chain."
+            self.chain_card.set(
+                f"{sym.upper()} · {len(expiries)} expiries",
+                "Pick an expiry above, then click Load chain.",
             )
+            self.chain_card.set_accent(C["cyan"])
 
         self._run(work, ok, busy=f"Loading expiries for {sym.upper()}…")
 
@@ -322,6 +767,8 @@ class OptionChainApp(ctk.CTk):
             return
         otype = self.chain_type.get()
         expiry = self.chain_expiry.get().strip() or None
+        if expiry in {"Pick expiry", ""}:
+            expiry = None
         try:
             near = int(self.chain_near.get().strip() or "8")
         except ValueError:
@@ -362,39 +809,42 @@ class OptionChainApp(ctk.CTk):
 
         def ok(payload: dict[str, Any]) -> None:
             pcr = payload["pcr"]
-            vr = "n/a" if pcr.volume_ratio is None else f"{pcr.volume_ratio:.3f}"
-            oi = "n/a" if pcr.oi_ratio is None else f"{pcr.oi_ratio:.3f}"
-            self.chain_info.configure(
-                text=(
-                    f"{payload['symbol']} — {payload['name']}  |  "
-                    f"spot {payload['spot']:,.2f} {payload['currency']}  |  "
-                    f"expiries: {', '.join(payload['expiries'])}"
-                )
+            self.chain_card.set(
+                f"{payload['symbol']}  —  {payload['name']}",
+                f"Spot  {payload['spot']:,.2f} {payload['currency']}   ·   "
+                f"Expiry  {', '.join(payload['expiries'])}   ·   "
+                f"{len(payload['df']) if payload['df'] is not None else 0} contracts shown",
             )
-            self.chain_pcr.configure(
-                text=(
-                    f"Put/Call ratio — volume: {vr}  "
-                    f"(puts {pcr.put_volume:,} / calls {pcr.call_volume:,})   ·   "
-                    f"OI: {oi}"
-                )
+            self.chain_card.set_accent(C["green"])
+            self._set_pcr_chips(
+                pcr.volume_ratio,
+                pcr.oi_ratio,
+                f"puts {pcr.put_volume:,}  /  calls {pcr.call_volume:,}",
             )
             _tree_clear(self.chain_tree)
             df = payload["df"]
             if df is None or df.empty:
                 return
-            for _, row in df.iterrows():
-                iv = row.get("impliedVolatility", 0) or 0
-                iv_s = f"{float(iv) * 100:.1f}%" if float(iv) > 1e-4 else "—"
+            for i, (_, row) in enumerate(df.iterrows()):
+                iv = float(row.get("impliedVolatility", 0) or 0)
+                iv_s = f"{iv * 100:.1f}%" if iv > 1e-4 else "—"
+                otype_s = str(row.get("type", "")).upper()
+                tag = "call" if otype_s == "CALL" else "put"
+                tags = (tag, "alt") if i % 2 else (tag,)
                 self.chain_tree.insert(
                     "",
                     "end",
                     values=(
                         row.get("expiry", ""),
-                        str(row.get("type", "")).upper(),
+                        otype_s,
                         f"{float(row.get('strike', 0)):.2f}",
                         f"{float(row.get('lastPrice', 0)):.2f}",
-                        f"{float(row.get('bid', 0)):.2f}" if float(row.get("bid", 0) or 0) > 0 else "—",
-                        f"{float(row.get('ask', 0)):.2f}" if float(row.get("ask", 0) or 0) > 0 else "—",
+                        f"{float(row.get('bid', 0)):.2f}"
+                        if float(row.get("bid", 0) or 0) > 0
+                        else "—",
+                        f"{float(row.get('ask', 0)):.2f}"
+                        if float(row.get("ask", 0) or 0) > 0
+                        else "—",
                         f"{int(row.get('volume', 0) or 0):,}",
                         f"{int(row.get('openInterest', 0) or 0):,}"
                         if int(row.get("openInterest", 0) or 0)
@@ -402,36 +852,46 @@ class OptionChainApp(ctk.CTk):
                         iv_s,
                         "✓" if bool(row.get("inTheMoney")) else "",
                     ),
+                    tags=tags,
                 )
 
         self._run(work, ok, busy=f"Loading chain for {sym.upper()}…")
 
-    # ── Tab: Top Volume ──────────────────────────────────────
+    # ── Top ──────────────────────────────────────────────────
     def _build_top_tab(self) -> None:
         t = self.tab_top
-        controls = ctk.CTkFrame(t)
-        controls.pack(fill="x", padx=8, pady=8)
-        ctk.CTkLabel(controls, text="How many").pack(side="left", padx=(8, 4))
-        self.top_n = ctk.CTkEntry(controls, width=70)
-        self.top_n.insert(0, "20")
-        self.top_n.pack(side="left")
-        ctk.CTkButton(
-            controls, text="Load leaders", fg_color="#1f6aa5", command=self._top_load
-        ).pack(side="left", padx=10)
-        ctk.CTkButton(
-            controls, text="Export TradingView watchlist…", command=self._top_export
+        bar = self._toolbar(t)
+        self.top_n = make_entry(bar, width=80, text="20")
+        Field(bar, "How many", self.top_n, label_color=C["magenta"]).pack(
+            side="left", padx=(0, 12)
+        )
+        actions = ctk.CTkFrame(bar, fg_color="transparent")
+        actions.pack(side="left", padx=8)
+        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
+        row = ctk.CTkFrame(actions, fg_color="transparent")
+        row.pack()
+        make_primary_btn(row, "Load leaders", self._top_load, width=130).pack(
+            side="left", padx=4
+        )
+        make_accent_btn(
+            row,
+            "Export TradingView…",
+            self._top_export,
+            color="#7c3aed",
+            hover="#6d28d9",
+            width=170,
         ).pack(side="left", padx=4)
 
-        self.top_info = ctk.CTkLabel(
-            t, text="Top underlyings by options trading volume (Yahoo most-active).",
-            anchor="w",
+        self.top_card = InfoCard(t, accent=C["magenta"])
+        self.top_card.pack(fill="x", padx=10, pady=4)
+        self.top_card.set(
+            "Options volume leaders",
+            "Highest options activity (Yahoo most-active contracts, rolled up by underlying).",
         )
-        self.top_info.pack(fill="x", padx=12)
 
-        frame = ctk.CTkFrame(t)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        _, self.top_tree = self._table_frame(t)
         cols = ("rank", "symbol", "name", "spot", "chg", "opt_vol", "calls", "puts", "pcr")
-        self.top_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        self.top_tree["columns"] = cols
         heads = {
             "rank": "#", "symbol": "Symbol", "name": "Name", "spot": "Spot",
             "chg": "Chg%", "opt_vol": "Opt Vol", "calls": "Calls", "puts": "Puts",
@@ -439,11 +899,8 @@ class OptionChainApp(ctk.CTk):
         }
         for c in cols:
             self.top_tree.heading(c, text=heads[c])
-            self.top_tree.column(c, width=90 if c != "name" else 180, anchor="center")
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.top_tree.yview)
-        self.top_tree.configure(yscrollcommand=sb.set)
-        self.top_tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+            w = 200 if c == "name" else (70 if c == "rank" else 95)
+            self.top_tree.column(c, width=w, anchor="center")
 
     def _top_load(self) -> None:
         try:
@@ -457,25 +914,33 @@ class OptionChainApp(ctk.CTk):
 
         def ok(result: Any) -> None:
             self._leaders_result = result
-            self.top_info.configure(
-                text=(
-                    f"Top {len(result.leaders)} · scanned {result.contracts_scanned:,} "
-                    f"contracts · {result.unique_underlyings} underlyings · "
-                    f"{result.fetched_at.strftime('%Y-%m-%d %H:%M')}"
-                )
+            self.top_card.set(
+                f"Top {len(result.leaders)} underlyings by options volume",
+                f"Scanned {result.contracts_scanned:,} contracts · "
+                f"{result.unique_underlyings} unique · "
+                f"{result.fetched_at.strftime('%Y-%m-%d %H:%M')}",
             )
+            self.top_card.set_accent(C["magenta"])
             _tree_clear(self.top_tree)
-            for row in result.leaders:
+            for i, row in enumerate(result.leaders):
                 spot = "—" if row.spot_price is None else f"{row.spot_price:,.2f}"
                 chg = "—" if row.change_pct is None else f"{row.change_pct:+.2f}%"
                 pcr = "—" if row.put_call_ratio is None else f"{row.put_call_ratio:.2f}"
+                chg_tag = (
+                    "up"
+                    if row.change_pct is not None and row.change_pct >= 0
+                    else "down"
+                    if row.change_pct is not None
+                    else ""
+                )
+                tags = [t for t in (("alt" if i % 2 else ""), chg_tag) if t]
                 self.top_tree.insert(
                     "",
                     "end",
                     values=(
                         row.rank,
                         row.symbol,
-                        (row.name or "")[:40],
+                        (row.name or "")[:42],
                         spot,
                         chg,
                         f"{row.options_volume:,}",
@@ -483,15 +948,14 @@ class OptionChainApp(ctk.CTk):
                         f"{row.put_volume:,}",
                         pcr,
                     ),
+                    tags=tuple(tags),
                 )
 
         self._run(work, ok, busy=f"Loading top {n} options leaders…")
 
     def _top_export(self) -> None:
         if not self._leaders_result or not self._leaders_result.leaders:
-            messagebox.showinfo(
-                "OptionChain", "Load leaders first, then export a watchlist."
-            )
+            messagebox.showinfo("OptionChain", "Load leaders first, then export.")
             return
         path = filedialog.asksaveasfilename(
             title="Save TradingView watchlist",
@@ -510,70 +974,93 @@ class OptionChainApp(ctk.CTk):
                 f"Saved:\n{saved}\n\n"
                 "TradingView → Watchlist → ··· → Import list of symbols",
             )
-            self.status.set_message(f"Watchlist exported: {saved}")
+            self.status.set_message(f"Watchlist exported · {saved}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("OptionChain", _err_text(exc))
 
-    # ── Tab: History + Chart ─────────────────────────────────
+    # ── History ──────────────────────────────────────────────
     def _build_history_tab(self) -> None:
         t = self.tab_history
-        controls = ctk.CTkFrame(t)
-        controls.pack(fill="x", padx=8, pady=8)
-
-        self.hist_symbol = ctk.CTkEntry(controls, width=100, placeholder_text="SPY")
-        self.hist_symbol.insert(0, "SPY")
-        self.hist_days = ctk.CTkEntry(controls, width=50)
-        self.hist_days.insert(0, "5")
-        self.hist_type = ctk.CTkOptionMenu(
-            controls, values=["all", "call", "put"], width=90
+        bar = self._toolbar(t)
+        self.hist_symbol = make_entry(bar, width=100, text="SPY")
+        self.hist_days = make_entry(bar, width=60, text="5")
+        self.hist_type = make_option_menu(
+            bar, ["all", "call", "put"], width=110, default="all"
         )
-        self.hist_type.set("all")
-        self.hist_near = ctk.CTkEntry(controls, width=50)
-        self.hist_near.insert(0, "3")
-        self.hist_expiry = ctk.CTkEntry(controls, width=110, placeholder_text="optional")
+        self.hist_near = make_entry(bar, width=60, text="3")
+        self.hist_expiry = make_entry(bar, width=120, placeholder="Optional YYYY-MM-DD")
 
-        for lbl, w in [
-            ("Symbol", self.hist_symbol),
-            ("Days", self.hist_days),
-            ("Type", self.hist_type),
-            ("Near", self.hist_near),
-            ("Expiry", self.hist_expiry),
+        Field(bar, "Symbol", self.hist_symbol, label_color=C["cyan"]).pack(
+            side="left", padx=(0, 10)
+        )
+        Field(bar, "Days", self.hist_days).pack(side="left", padx=(0, 10))
+        Field(bar, "Type", self.hist_type, label_color=C["green"]).pack(
+            side="left", padx=(0, 10)
+        )
+        Field(bar, "Near", self.hist_near).pack(side="left", padx=(0, 10))
+        Field(bar, "Expiry", self.hist_expiry, label_color=C["amber"]).pack(
+            side="left", padx=(0, 10)
+        )
+
+        actions = ctk.CTkFrame(bar, fg_color="transparent")
+        actions.pack(side="right")
+        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
+        row = ctk.CTkFrame(actions, fg_color="transparent")
+        row.pack()
+        make_primary_btn(row, "Load + plot", self._history_load, width=120).pack(
+            side="left", padx=4
+        )
+        make_secondary_btn(row, "Save PNG…", self._history_save_png, width=110).pack(
+            side="left", padx=4
+        )
+
+        self.hist_card = InfoCard(t, accent=C["blue"])
+        self.hist_card.pack(fill="x", padx=10, pady=4)
+        self.hist_card.set(
+            "Multi-day option prices",
+            "Green lines = calls · Red lines = puts · Strike labeled on each line.",
+        )
+
+        paned = tk.PanedWindow(
+            t, orient=tk.VERTICAL, sashwidth=8, bg=C["surface"], sashrelief="flat"
+        )
+        paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        table_wrap = ctk.CTkFrame(
+            paned, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"]
+        )
+        host = tk.Frame(table_wrap, bg=C["card"])
+        host.pack(fill="both", expand=True, padx=8, pady=8)
+        self.hist_tree = ttk.Treeview(
+            host,
+            columns=("type", "strike", "d0", "d1", "d2", "d3", "d4", "chg", "pct", "vol"),
+            show="headings",
+            style="App.Treeview",
+            height=7,
+        )
+        for c, h in [
+            ("type", "Type"), ("strike", "Strike"), ("d0", "D1"), ("d1", "D2"),
+            ("d2", "D3"), ("d3", "D4"), ("d4", "D5"), ("chg", "Δ $"),
+            ("pct", "Δ %"), ("vol", "Vol"),
         ]:
-            ctk.CTkLabel(controls, text=lbl).pack(side="left", padx=(8, 2))
-            w.pack(side="left", padx=2)
-
-        ctk.CTkButton(
-            controls, text="Load + plot", fg_color="#1f6aa5", command=self._history_load
-        ).pack(side="left", padx=10)
-        ctk.CTkButton(
-            controls, text="Save chart PNG…", command=self._history_save_png
-        ).pack(side="left", padx=4)
-
-        self.hist_info = ctk.CTkLabel(t, text="", anchor="w")
-        self.hist_info.pack(fill="x", padx=12)
-
-        # split: table top, chart bottom
-        paned = tk.PanedWindow(t, orient=tk.VERTICAL, sashwidth=6, bg="#2b2b2b")
-        paned.pack(fill="both", expand=True, padx=8, pady=8)
-
-        table_frame = ctk.CTkFrame(paned)
-        cols = ("type", "strike", "d0", "d1", "d2", "d3", "d4", "chg", "pct", "vol")
-        self.hist_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=8)
-        for c in cols:
-            self.hist_tree.heading(c, text=c.upper())
-            self.hist_tree.column(c, width=70, anchor="center")
-        sb = ttk.Scrollbar(table_frame, orient="vertical", command=self.hist_tree.yview)
+            self.hist_tree.heading(c, text=h)
+            self.hist_tree.column(c, width=72, anchor="center")
+        sb = ttk.Scrollbar(host, orient="vertical", command=self.hist_tree.yview)
         self.hist_tree.configure(yscrollcommand=sb.set)
         self.hist_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        paned.add(table_frame, height=200)
+        _tag_tree(self.hist_tree)
+        paned.add(table_wrap, height=210)
 
-        self.plot_host = ctk.CTkFrame(paned)
+        self.plot_host = ctk.CTkFrame(
+            paned, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"]
+        )
         paned.add(self.plot_host)
         self.plot_placeholder = ctk.CTkLabel(
             self.plot_host,
-            text="Load history to see call (green) / put (red) price chart.",
-            text_color="gray60",
+            text="Load history to plot call (green) and put (red) prices",
+            font=_font(14),
+            text_color=C["muted"],
         )
         self.plot_placeholder.pack(expand=True)
 
@@ -599,18 +1086,35 @@ class OptionChainApp(ctk.CTk):
         self._clear_plot()
         if not _HAS_MPL:
             ctk.CTkLabel(
-                self.plot_host, text="matplotlib Tk backend unavailable."
+                self.plot_host, text="matplotlib Tk backend unavailable.", text_color=C["red"]
             ).pack(expand=True)
             return
+        # Dark chart background to match UI
+        fig.patch.set_facecolor(C["card"])
+        for ax in fig.get_axes():
+            ax.set_facecolor("#0f172a")
+            ax.tick_params(colors=C["muted"])
+            ax.xaxis.label.set_color(C["muted"])
+            ax.yaxis.label.set_color(C["muted"])
+            ax.title.set_color(C["text"])
+            for spine in ax.spines.values():
+                spine.set_color(C["border"])
+            leg = ax.get_legend()
+            if leg is not None:
+                leg.get_frame().set_facecolor(C["elevated"])
+                leg.get_frame().set_edgecolor(C["border"])
+                for text in leg.get_texts():
+                    text.set_color(C["text"])
         self._plot_fig = fig
         canvas = FigureCanvasTkAgg(fig, master=self.plot_host)
         canvas.draw()
-        toolbar = NavigationToolbar2Tk(canvas, self.plot_host, pack_toolbar=False)
+        toolbar_frame = tk.Frame(self.plot_host, bg=C["elevated"])
+        toolbar_frame.pack(side="top", fill="x")
+        toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=True)
         toolbar.update()
-        toolbar.pack(side="top", fill="x")
         canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
         self._plot_canvas = canvas
-        self._plot_toolbar = toolbar
+        self._plot_toolbar = toolbar_frame
 
     def _history_load(self) -> None:
         sym = self.hist_symbol.get().strip()
@@ -628,32 +1132,31 @@ class OptionChainApp(ctk.CTk):
 
         def work() -> Any:
             return fetch_chain_history(
-                sym,
-                days=days,
-                expiry=expiry,
-                option_type=otype,
-                near=near,
+                sym, days=days, expiry=expiry, option_type=otype, near=near
             )
 
         def ok(result: Any) -> None:
             self._history_result = result
             dates = result.trade_dates
             labels = [d.strftime("%m/%d") for d in dates]
-            # dynamic headings for up to 5 date cols we show
-            self.hist_info.configure(
-                text=(
-                    f"{result.symbol} — {result.company_name}  |  "
-                    f"spot {result.spot_price:,.2f}  |  expiry {result.expiry}  |  "
-                    f"{len(dates)} sessions"
-                    + (
-                        f"  |  stock Δ {result.spot_change_pct:+.2f}%"
-                        if result.spot_change_pct is not None
-                        else ""
-                    )
-                )
+            spot_line = ""
+            if result.spot_change_pct is not None:
+                spot_line = f"  ·  stock Δ {result.spot_change_pct:+.2f}%"
+            self.hist_card.set(
+                f"{result.symbol}  —  {result.company_name}",
+                f"Spot {result.spot_price:,.2f}  ·  expiry {result.expiry}  ·  "
+                f"{len(dates)} sessions{spot_line}",
             )
-            # rebuild columns for dates
-            cols = ["type", "strike", *[f"d{i}" for i in range(min(5, len(dates)))], "chg", "pct", "vol"]
+            self.hist_card.set_accent(C["blue"])
+
+            cols = [
+                "type",
+                "strike",
+                *[f"d{i}" for i in range(min(5, len(dates)))],
+                "chg",
+                "pct",
+                "vol",
+            ]
             self.hist_tree["columns"] = cols
             heads = {"type": "Type", "strike": "Strike", "chg": "Δ $", "pct": "Δ %", "vol": "Vol"}
             for i, lab in enumerate(labels[:5]):
@@ -663,27 +1166,31 @@ class OptionChainApp(ctk.CTk):
                 self.hist_tree.column(c, width=72, anchor="center")
 
             _tree_clear(self.hist_tree)
-            for c in result.contracts:
+            for i, c in enumerate(result.contracts):
                 vals: list[Any] = [c.option_type.upper(), f"{c.strike:.2f}"]
                 for d in dates[:5]:
                     px = c.close_on(d)
                     vals.append(f"{px:.2f}" if px is not None else "—")
-                # pad if fewer than 5 date cols expected - already sized to len
                 d_dollar = c.dollar_change
                 d_pct = c.percent_change
                 vals.append(f"{d_dollar:+.2f}" if d_dollar is not None else "—")
                 vals.append(f"{d_pct:+.1f}%" if d_pct is not None else "—")
                 last_vol = c.points[-1].volume if c.points else 0
                 vals.append(f"{last_vol:,}" if last_vol else "—")
-                self.hist_tree.insert("", "end", values=tuple(vals))
+                tag = "call" if c.option_type == "call" else "put"
+                tags = (tag, "alt") if i % 2 else (tag,)
+                self.hist_tree.insert("", "end", values=tuple(vals), tags=tags)
 
             try:
-                fig = build_chain_history_figure(result, figsize=(9.5, 5.5))
+                fig = build_chain_history_figure(result, figsize=(9.5, 5.2))
                 self._embed_plot(fig)
             except Exception as exc:  # noqa: BLE001
                 self._clear_plot()
                 ctk.CTkLabel(
-                    self.plot_host, text=f"Plot error: {exc}", text_color="tomato"
+                    self.plot_host,
+                    text=f"Plot error: {exc}",
+                    text_color=C["red"],
+                    font=_font(13),
                 ).pack(expand=True)
 
         self._run(work, ok, busy=f"Loading history for {sym.upper()}…")
@@ -706,50 +1213,69 @@ class OptionChainApp(ctk.CTk):
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("OptionChain", _err_text(exc))
 
-    # ── Tab: Compare ─────────────────────────────────────────
+    # ── Compare ──────────────────────────────────────────────
     def _build_compare_tab(self) -> None:
         t = self.tab_compare
-        controls = ctk.CTkFrame(t)
-        controls.pack(fill="x", padx=8, pady=8)
+        bar = self._toolbar(t)
+        self.cmp_symbol = make_entry(bar, width=100, text="TSLA")
+        self.cmp_side = make_option_menu(bar, ["call", "put"], width=110, default="call")
+        self.cmp_expiry = make_entry(bar, width=120, placeholder="Optional expiry")
+        self.cmp_move = make_entry(bar, width=70, placeholder="e.g. 5")
+        self.cmp_budget = make_entry(bar, width=80, placeholder="e.g. 500")
+        self.cmp_ifspot = make_entry(bar, width=90, placeholder="Price")
 
-        self.cmp_symbol = ctk.CTkEntry(controls, width=100)
-        self.cmp_symbol.insert(0, "TSLA")
-        self.cmp_side = ctk.CTkOptionMenu(controls, values=["call", "put"], width=90)
-        self.cmp_side.set("call")
-        self.cmp_expiry = ctk.CTkEntry(controls, width=110, placeholder_text="optional")
-        self.cmp_move = ctk.CTkEntry(controls, width=60, placeholder_text="e.g. 5")
-        self.cmp_budget = ctk.CTkEntry(controls, width=70, placeholder_text="e.g. 500")
-        self.cmp_ifspot = ctk.CTkEntry(controls, width=80, placeholder_text="price")
+        Field(bar, "Symbol", self.cmp_symbol, label_color=C["cyan"]).pack(
+            side="left", padx=(0, 8)
+        )
+        Field(bar, "Side", self.cmp_side, label_color=C["green"]).pack(
+            side="left", padx=(0, 8)
+        )
+        Field(bar, "Expiry", self.cmp_expiry, label_color=C["amber"]).pack(
+            side="left", padx=(0, 8)
+        )
+        Field(bar, "Target move %", self.cmp_move).pack(side="left", padx=(0, 8))
+        Field(bar, "Budget $", self.cmp_budget).pack(side="left", padx=(0, 8))
+        Field(bar, "If spot", self.cmp_ifspot).pack(side="left", padx=(0, 8))
 
-        for lbl, w in [
-            ("Symbol", self.cmp_symbol),
-            ("Side", self.cmp_side),
-            ("Expiry", self.cmp_expiry),
-            ("Target move %", self.cmp_move),
-            ("Budget $", self.cmp_budget),
-            ("If spot", self.cmp_ifspot),
-        ]:
-            ctk.CTkLabel(controls, text=lbl).pack(side="left", padx=(6, 2))
-            w.pack(side="left", padx=2)
+        actions = ctk.CTkFrame(bar, fg_color="transparent")
+        actions.pack(side="right")
+        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
+        make_primary_btn(actions, "Compare styles", self._compare_load, width=140).pack()
 
-        ctk.CTkButton(
-            controls, text="Compare styles", fg_color="#1f6aa5", command=self._compare_load
-        ).pack(side="left", padx=10)
+        self.cmp_card = InfoCard(t, accent=C["amber"])
+        self.cmp_card.pack(fill="x", padx=10, pady=4)
+        self.cmp_card.set(
+            "ITM vs OTM research",
+            "Deep ITM → Far OTM · green styles lean conservative · red lean aggressive.",
+        )
 
-        self.cmp_info = ctk.CTkLabel(t, text="", anchor="w")
-        self.cmp_info.pack(fill="x", padx=12)
-        self.cmp_guide = ctk.CTkTextbox(t, height=120)
-        self.cmp_guide.pack(fill="x", padx=12, pady=4)
-        self.cmp_guide.insert("1.0", "Compare long call/put styles: Deep ITM → Far OTM.")
+        guide_wrap = ctk.CTkFrame(
+            t, fg_color=C["card"], corner_radius=10, border_width=1, border_color=C["border"]
+        )
+        guide_wrap.pack(fill="x", padx=10, pady=(0, 4))
+        self.cmp_guide = ctk.CTkTextbox(
+            guide_wrap,
+            height=110,
+            font=_font(12),
+            fg_color=C["card"],
+            text_color=C["text"],
+            border_width=0,
+            wrap="word",
+        )
+        self.cmp_guide.pack(fill="x", padx=8, pady=8)
+        self.cmp_guide.insert(
+            "1.0",
+            "Compare long call/put styles for the same expiry.\n"
+            "ITM costs more but needs less move · OTM is cheaper leverage but can expire worthless.",
+        )
         self.cmp_guide.configure(state="disabled")
 
-        frame = ctk.CTkFrame(t)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        _, self.cmp_tree = self._table_frame(t)
         cols = (
             "style", "strike", "mny", "last", "intr", "extr", "be", "move",
             "prem", "lev", "vol", "oi",
         )
-        self.cmp_tree = ttk.Treeview(frame, columns=cols, show="headings")
+        self.cmp_tree["columns"] = cols
         heads = {
             "style": "Style", "strike": "Strike", "mny": "Moneyness", "last": "Last",
             "intr": "Intr.", "extr": "Extr.", "be": "BE", "move": "Move→BE",
@@ -757,11 +1283,7 @@ class OptionChainApp(ctk.CTk):
         }
         for c in cols:
             self.cmp_tree.heading(c, text=heads[c])
-            self.cmp_tree.column(c, width=78, anchor="center")
-        sb = ttk.Scrollbar(frame, orient="vertical", command=self.cmp_tree.yview)
-        self.cmp_tree.configure(yscrollcommand=sb.set)
-        self.cmp_tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+            self.cmp_tree.column(c, width=82, anchor="center")
 
     def _compare_load(self) -> None:
         sym = self.cmp_symbol.get().strip()
@@ -797,13 +1319,13 @@ class OptionChainApp(ctk.CTk):
             )
 
         def ok(result: Any) -> None:
-            self.cmp_info.configure(
-                text=(
-                    f"{result.symbol} — {result.company_name}  |  "
-                    f"spot {result.spot_price:,.2f}  |  long {result.option_type.upper()}  |  "
-                    f"expiry {result.expiry}"
-                    + (f" ({result.dte}d)" if result.dte is not None else "")
-                )
+            accent = C["green"] if result.option_type == "call" else C["red"]
+            self.cmp_card.set_accent(accent)
+            self.cmp_card.set(
+                f"{result.symbol}  —  LONG {result.option_type.upper()}",
+                f"{result.company_name}  ·  spot {result.spot_price:,.2f}  ·  "
+                f"expiry {result.expiry}"
+                + (f" ({result.dte}d)" if result.dte is not None else ""),
             )
             style_names = {
                 "deep_itm": "Deep ITM",
@@ -813,7 +1335,14 @@ class OptionChainApp(ctk.CTk):
                 "far_otm": "Far OTM",
             }
             _tree_clear(self.cmp_tree)
-            for r in result.rows:
+            for i, r in enumerate(result.rows):
+                if r.bucket in {"deep_itm", "itm"}:
+                    tag = "itm"
+                elif r.bucket == "atm":
+                    tag = "atm"
+                else:
+                    tag = "otm"
+                tags = (tag, "alt") if i % 2 else (tag,)
                 self.cmp_tree.insert(
                     "",
                     "end",
@@ -831,10 +1360,13 @@ class OptionChainApp(ctk.CTk):
                         f"{r.volume:,}" if r.volume else "—",
                         f"{r.open_interest:,}" if r.open_interest else "—",
                     ),
+                    tags=tags,
                 )
             self.cmp_guide.configure(state="normal")
             self.cmp_guide.delete("1.0", "end")
-            self.cmp_guide.insert("1.0", "\n".join(f"• {line}" for line in style_guidance(result)))
+            self.cmp_guide.insert(
+                "1.0", "\n".join(f"•  {line}" for line in style_guidance(result))
+            )
             self.cmp_guide.configure(state="disabled")
 
         self._run(work, ok, busy=f"Comparing {side}s on {sym.upper()}…")
@@ -842,31 +1374,48 @@ class OptionChainApp(ctk.CTk):
     # ── Help ─────────────────────────────────────────────────
     def _build_help_tab(self) -> None:
         t = self.tab_help
-        box = ctk.CTkTextbox(t, wrap="word")
-        box.pack(fill="both", expand=True, padx=12, pady=12)
+        wrap = ctk.CTkFrame(
+            t, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"]
+        )
+        wrap.pack(fill="both", expand=True, padx=10, pady=10)
+        box = ctk.CTkTextbox(
+            wrap,
+            wrap="word",
+            font=_font(13),
+            fg_color=C["card"],
+            text_color=C["text"],
+            border_width=0,
+        )
+        box.pack(fill="both", expand=True, padx=14, pady=14)
         box.insert(
             "1.0",
             f"""OptionChain GUI  v{__version__}
 
+Color guide
+───────────
+  ● Green   CALL rows / ITM styles / up moves
+  ● Red     PUT rows / OTM styles / down moves
+  ● Amber   ATM / balanced
+  ● Cyan    headers, primary actions
+  ● Magenta PCR & volume leaders
+
 Tabs
 ────
-• Option Chain — live chain for a ticker (type, expiry, near-ATM strikes, PCR)
-• Top Volume — stocks/ETFs with the highest options volume; export TradingView watchlist
-• History + Chart — multi-day option closes + interactive call/put chart (green/red)
-• ITM vs OTM — research table for long call/put styles (not a buy recommendation)
+  Chain          Live option chain + put/call ratio chips
+  Top Volume     Busiest underlyings → Export TradingView watchlist
+  History+Chart  Multi-day prices + interactive green/red plot
+  ITM vs OTM     Research table for long call/put styles
 
-Tips
-────
-1. Start with Top Volume to see what’s active, then Export for TradingView.
-2. Use Option Chain with “Load expiries” then pick a date.
-3. History + Chart: green = calls, red = puts, strike labels on the lines.
-4. ITM vs OTM: use Target move % and Budget $ to filter realistic contracts.
-
-Data source: Yahoo Finance (yfinance). Free / delayed — research quality only.
+Quick start
+───────────
+  1. Top Volume → Load leaders → Export TradingView
+  2. Chain → enter ticker → Load expiries → Load chain
+  3. History → Load + plot (zoom/pan with toolbar)
+  4. ITM vs OTM → Compare styles with optional budget / target move
 
 {DISCLAIMER}
 
-CLI (same features):
+CLI twin:
   uv run optionchain --help
   uv run optionchain-gui
 """,
