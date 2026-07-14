@@ -184,30 +184,6 @@ class Worker:
 # ── Reusable widgets ────────────────────────────────────────────────────────
 
 
-class Field(ctk.CTkFrame):
-    """Labeled control stack — label on top, widget below (fixes cramped rows)."""
-
-    def __init__(
-        self,
-        master: Any,
-        label: str,
-        widget: ctk.CTkBaseClass,
-        *,
-        label_color: str | None = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(master, fg_color="transparent", **kwargs)
-        ctk.CTkLabel(
-            self,
-            text=label.upper(),
-            font=_font(10, "bold"),
-            text_color=label_color or C["muted"],
-            anchor="w",
-        ).pack(fill="x", pady=(0, 3))
-        widget.pack(fill="x")
-        self.widget = widget
-
-
 def make_entry(
     master: Any,
     *,
@@ -218,7 +194,7 @@ def make_entry(
     e = ctk.CTkEntry(
         master,
         width=width,
-        height=36,
+        height=34,
         corner_radius=8,
         border_width=1,
         border_color=C["border"],
@@ -237,16 +213,16 @@ def make_option_menu(
     master: Any,
     values: list[str],
     *,
-    width: int = 130,
+    width: int = 120,
     default: str | None = None,
     command: Callable[[str], Any] | None = None,
 ) -> ctk.CTkOptionMenu:
-    """Option menu with explicit high-contrast colors (fixes blank text)."""
+    """Option menu with fixed width + high-contrast colors (no blank text)."""
     menu = ctk.CTkOptionMenu(
         master,
         values=values,
         width=width,
-        height=36,
+        height=34,
         corner_radius=8,
         font=_font(13, "bold"),
         dropdown_font=_font(13),
@@ -277,7 +253,7 @@ def make_combo(
         master,
         values=values or [""],
         width=width,
-        height=36,
+        height=34,
         corner_radius=8,
         border_width=1,
         border_color=C["border"],
@@ -297,6 +273,68 @@ def make_combo(
     elif values:
         box.set(values[0])
     return box
+
+
+class Toolbar(ctk.CTkFrame):
+    """
+    Card with a stable grid of controls.
+
+    Each field is one grid column: label on row 0, widget on row 1.
+    Buttons sit in the last column, bottom-aligned with the inputs.
+    """
+
+    def __init__(self, master: Any, **kwargs: Any) -> None:
+        super().__init__(
+            master,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
+            **kwargs,
+        )
+        self.inner = ctk.CTkFrame(self, fg_color="transparent")
+        self.inner.pack(fill="x", padx=14, pady=12)
+        self._col = 0
+        self.inner.grid_rowconfigure(0, weight=0)
+        self.inner.grid_rowconfigure(1, weight=0)
+
+    def add_field(
+        self,
+        label: str,
+        widget: ctk.CTkBaseClass,
+        *,
+        label_color: str | None = None,
+        padx: tuple[int, int] = (0, 12),
+    ) -> ctk.CTkBaseClass:
+        col = self._col
+        self._col += 1
+        ctk.CTkLabel(
+            self.inner,
+            text=label.upper(),
+            font=_font(10, "bold"),
+            text_color=label_color or C["muted"],
+            anchor="w",
+        ).grid(row=0, column=col, sticky="w", padx=padx, pady=(0, 5))
+        widget.grid(row=1, column=col, sticky="w", padx=padx)
+        # Prevent CTk widgets from stretching the column
+        self.inner.grid_columnconfigure(col, weight=0, minsize=0)
+        return widget
+
+    def add_actions(self, build: Callable[[ctk.CTkFrame], None]) -> None:
+        """
+        Add a bottom-aligned action cluster.
+
+        ``build(box)`` should create buttons with ``master=box`` and pack them.
+        """
+        col = self._col
+        self._col += 1
+        ctk.CTkLabel(self.inner, text="", font=_font(10)).grid(
+            row=0, column=col, sticky="w", padx=(16, 0)
+        )
+        box = ctk.CTkFrame(self.inner, fg_color="transparent")
+        box.grid(row=1, column=col, sticky="e", padx=(16, 0))
+        build(box)
+        self.inner.grid_columnconfigure(col, weight=1)  # push actions right
 
 
 def make_primary_btn(
@@ -607,18 +645,10 @@ class OptionChainApp(ctk.CTk):
 
         self.worker.submit(fn, ok, err)
 
-    def _toolbar(self, parent: Any) -> ctk.CTkFrame:
-        bar = ctk.CTkFrame(
-            parent,
-            fg_color=C["card"],
-            corner_radius=12,
-            border_width=1,
-            border_color=C["border"],
-        )
+    def _toolbar(self, parent: Any) -> Toolbar:
+        bar = Toolbar(parent)
         bar.pack(fill="x", padx=10, pady=(10, 6))
-        inner = ctk.CTkFrame(bar, fg_color="transparent")
-        inner.pack(fill="x", padx=12, pady=12)
-        return inner
+        return bar
 
     def _table_frame(self, parent: Any) -> tuple[ctk.CTkFrame, ttk.Treeview]:
         wrap = ctk.CTkFrame(
@@ -644,37 +674,33 @@ class OptionChainApp(ctk.CTk):
         t = self.tab_chain
         bar = self._toolbar(t)
 
-        self.chain_symbol = make_entry(bar, width=110, text="TSLA", placeholder="Ticker")
-        self.chain_type = make_option_menu(bar, ["all", "call", "put"], width=110, default="all")
-        self.chain_expiry = make_combo(bar, [""], width=150, placeholder="Pick expiry")
-        self.chain_near = make_entry(bar, width=70, text="8", placeholder="Near")
-        self.chain_smin = make_entry(bar, width=80, placeholder="Min")
-        self.chain_smax = make_entry(bar, width=80, placeholder="Max")
+        self.chain_symbol = make_entry(bar.inner, width=100, text="TSLA", placeholder="Ticker")
+        self.chain_type = make_option_menu(
+            bar.inner, ["all", "call", "put"], width=100, default="all"
+        )
+        self.chain_expiry = make_combo(
+            bar.inner, [""], width=140, placeholder="Pick expiry"
+        )
+        self.chain_near = make_entry(bar.inner, width=72, text="8", placeholder="8")
+        self.chain_smin = make_entry(bar.inner, width=80, placeholder="Min")
+        self.chain_smax = make_entry(bar.inner, width=80, placeholder="Max")
 
-        Field(bar, "Symbol", self.chain_symbol, label_color=C["cyan"]).pack(
-            side="left", padx=(0, 10)
-        )
-        Field(bar, "Type", self.chain_type, label_color=C["green"]).pack(
-            side="left", padx=(0, 10)
-        )
-        Field(bar, "Expiry", self.chain_expiry, label_color=C["amber"]).pack(
-            side="left", padx=(0, 10)
-        )
-        Field(bar, "Near ATM", self.chain_near).pack(side="left", padx=(0, 10))
-        Field(bar, "Strike ≥", self.chain_smin).pack(side="left", padx=(0, 10))
-        Field(bar, "Strike ≤", self.chain_smax).pack(side="left", padx=(0, 10))
+        bar.add_field("Symbol", self.chain_symbol, label_color=C["cyan"])
+        bar.add_field("Type", self.chain_type, label_color=C["green"])
+        bar.add_field("Expiry", self.chain_expiry, label_color=C["amber"])
+        bar.add_field("Near ATM", self.chain_near)
+        bar.add_field("Strike ≥", self.chain_smin)
+        bar.add_field("Strike ≤", self.chain_smax)
 
-        actions = ctk.CTkFrame(bar, fg_color="transparent")
-        actions.pack(side="right", padx=(8, 0))
-        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()  # align with fields
-        btn_row = ctk.CTkFrame(actions, fg_color="transparent")
-        btn_row.pack()
-        make_secondary_btn(btn_row, "Load expiries", self._chain_load_expiries, width=120).pack(
-            side="left", padx=4
-        )
-        make_primary_btn(btn_row, "Load chain", self._chain_load, width=120).pack(
-            side="left", padx=4
-        )
+        def _chain_actions(box: ctk.CTkFrame) -> None:
+            make_secondary_btn(
+                box, "Load expiries", self._chain_load_expiries, width=120
+            ).pack(side="left", padx=(0, 8))
+            make_primary_btn(box, "Load chain", self._chain_load, width=120).pack(
+                side="left"
+            )
+
+        bar.add_actions(_chain_actions)
 
         self.chain_card = InfoCard(t, accent=C["cyan"])
         self.chain_card.pack(fill="x", padx=10, pady=(4, 4))
@@ -861,26 +887,23 @@ class OptionChainApp(ctk.CTk):
     def _build_top_tab(self) -> None:
         t = self.tab_top
         bar = self._toolbar(t)
-        self.top_n = make_entry(bar, width=80, text="20")
-        Field(bar, "How many", self.top_n, label_color=C["magenta"]).pack(
-            side="left", padx=(0, 12)
-        )
-        actions = ctk.CTkFrame(bar, fg_color="transparent")
-        actions.pack(side="left", padx=8)
-        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
-        row = ctk.CTkFrame(actions, fg_color="transparent")
-        row.pack()
-        make_primary_btn(row, "Load leaders", self._top_load, width=130).pack(
-            side="left", padx=4
-        )
-        make_accent_btn(
-            row,
-            "Export TradingView…",
-            self._top_export,
-            color="#7c3aed",
-            hover="#6d28d9",
-            width=170,
-        ).pack(side="left", padx=4)
+        self.top_n = make_entry(bar.inner, width=80, text="20")
+        bar.add_field("How many", self.top_n, label_color=C["magenta"])
+
+        def _top_actions(box: ctk.CTkFrame) -> None:
+            make_primary_btn(box, "Load leaders", self._top_load, width=130).pack(
+                side="left", padx=(0, 8)
+            )
+            make_accent_btn(
+                box,
+                "Export TradingView…",
+                self._top_export,
+                color="#7c3aed",
+                hover="#6d28d9",
+                width=170,
+            ).pack(side="left")
+
+        bar.add_actions(_top_actions)
 
         self.top_card = InfoCard(t, accent=C["magenta"])
         self.top_card.pack(fill="x", padx=10, pady=4)
@@ -982,37 +1005,31 @@ class OptionChainApp(ctk.CTk):
     def _build_history_tab(self) -> None:
         t = self.tab_history
         bar = self._toolbar(t)
-        self.hist_symbol = make_entry(bar, width=100, text="SPY")
-        self.hist_days = make_entry(bar, width=60, text="5")
+        self.hist_symbol = make_entry(bar.inner, width=100, text="SPY")
+        self.hist_days = make_entry(bar.inner, width=64, text="5")
         self.hist_type = make_option_menu(
-            bar, ["all", "call", "put"], width=110, default="all"
+            bar.inner, ["all", "call", "put"], width=100, default="all"
         )
-        self.hist_near = make_entry(bar, width=60, text="3")
-        self.hist_expiry = make_entry(bar, width=120, placeholder="Optional YYYY-MM-DD")
-
-        Field(bar, "Symbol", self.hist_symbol, label_color=C["cyan"]).pack(
-            side="left", padx=(0, 10)
-        )
-        Field(bar, "Days", self.hist_days).pack(side="left", padx=(0, 10))
-        Field(bar, "Type", self.hist_type, label_color=C["green"]).pack(
-            side="left", padx=(0, 10)
-        )
-        Field(bar, "Near", self.hist_near).pack(side="left", padx=(0, 10))
-        Field(bar, "Expiry", self.hist_expiry, label_color=C["amber"]).pack(
-            side="left", padx=(0, 10)
+        self.hist_near = make_entry(bar.inner, width=64, text="3")
+        self.hist_expiry = make_entry(
+            bar.inner, width=130, placeholder="Optional YYYY-MM-DD"
         )
 
-        actions = ctk.CTkFrame(bar, fg_color="transparent")
-        actions.pack(side="right")
-        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
-        row = ctk.CTkFrame(actions, fg_color="transparent")
-        row.pack()
-        make_primary_btn(row, "Load + plot", self._history_load, width=120).pack(
-            side="left", padx=4
-        )
-        make_secondary_btn(row, "Save PNG…", self._history_save_png, width=110).pack(
-            side="left", padx=4
-        )
+        bar.add_field("Symbol", self.hist_symbol, label_color=C["cyan"])
+        bar.add_field("Days", self.hist_days)
+        bar.add_field("Type", self.hist_type, label_color=C["green"])
+        bar.add_field("Near", self.hist_near)
+        bar.add_field("Expiry", self.hist_expiry, label_color=C["amber"])
+
+        def _hist_actions(box: ctk.CTkFrame) -> None:
+            make_primary_btn(box, "Load + plot", self._history_load, width=120).pack(
+                side="left", padx=(0, 8)
+            )
+            make_secondary_btn(
+                box, "Save PNG…", self._history_save_png, width=110
+            ).pack(side="left")
+
+        bar.add_actions(_hist_actions)
 
         self.hist_card = InfoCard(t, accent=C["blue"])
         self.hist_card.pack(fill="x", padx=10, pady=4)
@@ -1217,30 +1234,28 @@ class OptionChainApp(ctk.CTk):
     def _build_compare_tab(self) -> None:
         t = self.tab_compare
         bar = self._toolbar(t)
-        self.cmp_symbol = make_entry(bar, width=100, text="TSLA")
-        self.cmp_side = make_option_menu(bar, ["call", "put"], width=110, default="call")
-        self.cmp_expiry = make_entry(bar, width=120, placeholder="Optional expiry")
-        self.cmp_move = make_entry(bar, width=70, placeholder="e.g. 5")
-        self.cmp_budget = make_entry(bar, width=80, placeholder="e.g. 500")
-        self.cmp_ifspot = make_entry(bar, width=90, placeholder="Price")
+        self.cmp_symbol = make_entry(bar.inner, width=100, text="TSLA")
+        self.cmp_side = make_option_menu(
+            bar.inner, ["call", "put"], width=100, default="call"
+        )
+        self.cmp_expiry = make_entry(bar.inner, width=120, placeholder="Optional expiry")
+        self.cmp_move = make_entry(bar.inner, width=72, placeholder="e.g. 5")
+        self.cmp_budget = make_entry(bar.inner, width=80, placeholder="e.g. 500")
+        self.cmp_ifspot = make_entry(bar.inner, width=90, placeholder="Price")
 
-        Field(bar, "Symbol", self.cmp_symbol, label_color=C["cyan"]).pack(
-            side="left", padx=(0, 8)
-        )
-        Field(bar, "Side", self.cmp_side, label_color=C["green"]).pack(
-            side="left", padx=(0, 8)
-        )
-        Field(bar, "Expiry", self.cmp_expiry, label_color=C["amber"]).pack(
-            side="left", padx=(0, 8)
-        )
-        Field(bar, "Target move %", self.cmp_move).pack(side="left", padx=(0, 8))
-        Field(bar, "Budget $", self.cmp_budget).pack(side="left", padx=(0, 8))
-        Field(bar, "If spot", self.cmp_ifspot).pack(side="left", padx=(0, 8))
+        bar.add_field("Symbol", self.cmp_symbol, label_color=C["cyan"])
+        bar.add_field("Side", self.cmp_side, label_color=C["green"])
+        bar.add_field("Expiry", self.cmp_expiry, label_color=C["amber"])
+        bar.add_field("Target move %", self.cmp_move)
+        bar.add_field("Budget $", self.cmp_budget)
+        bar.add_field("If spot", self.cmp_ifspot)
 
-        actions = ctk.CTkFrame(bar, fg_color="transparent")
-        actions.pack(side="right")
-        ctk.CTkLabel(actions, text=" ", font=_font(10)).pack()
-        make_primary_btn(actions, "Compare styles", self._compare_load, width=140).pack()
+        def _cmp_actions(box: ctk.CTkFrame) -> None:
+            make_primary_btn(
+                box, "Compare styles", self._compare_load, width=140
+            ).pack(side="left")
+
+        bar.add_actions(_cmp_actions)
 
         self.cmp_card = InfoCard(t, accent=C["amber"])
         self.cmp_card.pack(fill="x", padx=10, pady=4)
