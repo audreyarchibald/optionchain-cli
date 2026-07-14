@@ -1434,17 +1434,29 @@ class OptionChainApp(ctk.CTk):
         self.hist_card.pack(fill="x", padx=10, pady=4)
         self.hist_card.set(
             "Multi-day option prices",
-            "Green lines = calls · Red lines = puts · Strike labeled on each line.",
+            "Left = data table · Right = chart  ·  Green = calls · Red = puts.",
         )
 
+        # Two columns: table (left) | plot (right)
         paned = tk.PanedWindow(
-            t, orient=tk.VERTICAL, sashwidth=8, bg=C["surface"], sashrelief="flat"
+            t, orient=tk.HORIZONTAL, sashwidth=8, bg=C["surface"], sashrelief="flat"
         )
         paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         table_wrap = ctk.CTkFrame(
-            paned, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"]
+            paned,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
         )
+        ctk.CTkLabel(
+            table_wrap,
+            text="CONTRACT HISTORY",
+            font=_font(10, "bold"),
+            text_color=C["cyan"],
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(8, 0))
         host = tk.Frame(table_wrap, bg=C["card"])
         host.pack(fill="both", expand=True, padx=8, pady=8)
         self.hist_tree = ttk.Treeview(
@@ -1452,7 +1464,7 @@ class OptionChainApp(ctk.CTk):
             columns=("type", "strike", "d0", "d1", "d2", "d3", "d4", "chg", "pct", "vol"),
             show="headings",
             style="App.Treeview",
-            height=7,
+            height=16,
         )
         for c, h in [
             ("type", "Type"), ("strike", "Strike"), ("d0", "D1"), ("d1", "D2"),
@@ -1460,20 +1472,33 @@ class OptionChainApp(ctk.CTk):
             ("pct", "Δ %"), ("vol", "Vol"),
         ]:
             self.hist_tree.heading(c, text=h)
-            self.hist_tree.column(c, width=72, anchor="center")
+            self.hist_tree.column(c, width=64, anchor="center")
         sb = ttk.Scrollbar(host, orient="vertical", command=self.hist_tree.yview)
         self.hist_tree.configure(yscrollcommand=sb.set)
         self.hist_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         _tag_tree(self.hist_tree)
-        paned.add(table_wrap, height=210)
+        paned.add(table_wrap, width=420, minsize=280)
 
         self.plot_host = ctk.CTkFrame(
-            paned, fg_color=C["card"], corner_radius=12, border_width=1, border_color=C["border"]
+            paned,
+            fg_color=C["card"],
+            corner_radius=12,
+            border_width=1,
+            border_color=C["border"],
         )
-        paned.add(self.plot_host)
-        self.plot_placeholder = ctk.CTkLabel(
+        ctk.CTkLabel(
             self.plot_host,
+            text="PRICE CHART",
+            font=_font(10, "bold"),
+            text_color=C["cyan"],
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(8, 0))
+        self.plot_body = ctk.CTkFrame(self.plot_host, fg_color="transparent")
+        self.plot_body.pack(fill="both", expand=True, padx=4, pady=4)
+        paned.add(self.plot_host, width=720, minsize=360)
+        self.plot_placeholder = ctk.CTkLabel(
+            self.plot_body,
             text="Load history to plot call (green) and put (red) prices",
             font=_font(14),
             text_color=C["muted"],
@@ -1495,14 +1520,16 @@ class OptionChainApp(ctk.CTk):
             except Exception:
                 pass
             self._plot_fig = None
-        for child in self.plot_host.winfo_children():
+        body = getattr(self, "plot_body", self.plot_host)
+        for child in body.winfo_children():
             child.destroy()
 
     def _embed_plot(self, fig: Figure) -> None:
         self._clear_plot()
+        body = getattr(self, "plot_body", self.plot_host)
         if not _HAS_MPL:
             ctk.CTkLabel(
-                self.plot_host, text="matplotlib Tk backend unavailable.", text_color=C["red"]
+                body, text="matplotlib Tk backend unavailable.", text_color=C["red"]
             ).pack(expand=True)
             return
         # Dark chart background to match UI
@@ -1522,9 +1549,14 @@ class OptionChainApp(ctk.CTk):
                 for text in leg.get_texts():
                     text.set_color(C["text"])
         self._plot_fig = fig
-        canvas = FigureCanvasTkAgg(fig, master=self.plot_host)
+        # Slightly taller option panel for side-by-side column
+        try:
+            fig.set_size_inches(7.2, 6.2)
+        except Exception:
+            pass
+        canvas = FigureCanvasTkAgg(fig, master=body)
         canvas.draw()
-        toolbar_frame = tk.Frame(self.plot_host, bg=C["elevated"])
+        toolbar_frame = tk.Frame(body, bg=C["elevated"])
         toolbar_frame.pack(side="top", fill="x")
         toolbar = NavigationToolbar2Tk(canvas, toolbar_frame, pack_toolbar=True)
         toolbar.update()
@@ -1598,12 +1630,13 @@ class OptionChainApp(ctk.CTk):
                 self.hist_tree.insert("", "end", values=tuple(vals), tags=tags)
 
             try:
-                fig = build_chain_history_figure(result, figsize=(9.5, 5.2))
+                fig = build_chain_history_figure(result, figsize=(7.2, 6.0))
                 self._embed_plot(fig)
             except Exception as exc:  # noqa: BLE001
                 self._clear_plot()
+                body = getattr(self, "plot_body", self.plot_host)
                 ctk.CTkLabel(
-                    self.plot_host,
+                    body,
                     text=f"Plot error: {exc}",
                     text_color=C["red"],
                     font=_font(13),
