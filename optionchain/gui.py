@@ -7,9 +7,11 @@ Run:
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
@@ -80,6 +82,33 @@ ctk.set_default_color_theme("dark-blue")
 DISCLAIMER = (
     "Research only · not financial advice · data via Yahoo Finance"
 )
+
+_RECENTS_PATH = Path.home() / ".optionchain" / "recents.json"
+_MAX_RECENTS = 12
+
+
+def _load_recents() -> list[str]:
+    try:
+        data = json.loads(_RECENTS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x).upper() for x in data if str(x).strip()][:_MAX_RECENTS]
+    except Exception:
+        pass
+    return []
+
+
+def _save_recent(symbol: str) -> list[str]:
+    sym = symbol.strip().upper()
+    if not sym:
+        return _load_recents()
+    items = [sym] + [s for s in _load_recents() if s != sym]
+    items = items[:_MAX_RECENTS]
+    try:
+        _RECENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RECENTS_PATH.write_text(json.dumps(items), encoding="utf-8")
+    except Exception:
+        pass
+    return items
 
 
 def _err_text(exc: BaseException) -> str:
@@ -516,6 +545,10 @@ class OptionChainApp(ctk.CTk):
         self._plot_canvas: Any = None
         self._plot_toolbar: Any = None
         self._plot_fig: Figure | None = None
+        self._chain_busy = False
+        self._suppress_chain_auto = False
+        self._current_symbol = "TSLA"
+        self._recents = _load_recents()
 
         self._build_header()
         self.tabs = ctk.CTkTabview(
@@ -660,10 +693,13 @@ class OptionChainApp(ctk.CTk):
         t = self.tab_chain
         bar = self._toolbar(t)
 
+        default_sym = self._recents[0] if self._recents else "TSLA"
         self.chain_symbol = make_entry(
-            bar.fields, width=110, text="TSLA", placeholder="Ticker"
+            bar.fields, width=110, text=default_sym, placeholder="Ticker"
         )
-        # Segmented control = clearer than a dropdown for 3 options
+        self.chain_symbol.bind("<Return>", lambda _e: self._chain_load())
+        self.chain_symbol.bind("<KP_Enter>", lambda _e: self._chain_load())
+
         self.chain_type_var = ctk.StringVar(value="all")
         self.chain_type_seg = ctk.CTkSegmentedButton(
             bar.fields,
@@ -678,8 +714,10 @@ class OptionChainApp(ctk.CTk):
             unselected_color=C["dropdown_bg"],
             unselected_hover_color=C["border"],
             text_color=C["white"],
+            command=self._on_chain_type_change,
         )
         self.chain_type_seg.set("all")
+
         self.chain_expiry = make_combo(
             bar.fields,
             values=["Nearest"],
@@ -687,6 +725,8 @@ class OptionChainApp(ctk.CTk):
             placeholder="Nearest",
         )
         self.chain_expiry.set("Nearest")
+        self.chain_expiry.configure(command=self._on_chain_expiry_change)
+
         self.chain_near = make_entry(bar.fields, width=72, text="8", placeholder="8")
         self.chain_smin = make_entry(bar.fields, width=80, placeholder="Min")
         self.chain_smax = make_entry(bar.fields, width=80, placeholder="Max")
@@ -699,26 +739,51 @@ class OptionChainApp(ctk.CTk):
         bar.add_field("Strike ≤", self.chain_smax)
 
         def _chain_actions(box: ctk.CTkFrame) -> None:
+            make_primary_btn(box, "Load", self._chain_load, width=110).pack(
+                side="left", padx=(0, 8)
+            )
+            self._filters_btn = make_secondary_btn(
+                box, "Filters ▸", self._toggle_chain_filters, width=100
+            )
+            self._filters_btn.pack(side="left", padx=(0, 8))
             make_secondary_btn(
-                box, "①  Load expiries", self._chain_load_expiries, width=140
-            ).pack(side="left", padx=(0, 10))
-            make_primary_btn(
-                box, "②  Load chain", self._chain_load, width=130
-            ).pack(side="left")
+                box, "Chart 5d", self._quick_history, width=100
+            ).pack(side="left", padx=(0, 8))
+            make_secondary_btn(
+                box, "Compare", self._quick_compare, width=100
+            ).pack(side="left", padx=(0, 8))
             ctk.CTkLabel(
                 box,
-                text="  Tip: step ① fills the Expiry list · step ② loads the table",
+                text="  Enter = Load · type/expiry change reloads",
                 font=_font(11),
                 text_color=C["muted"],
-            ).pack(side="left", padx=12)
+            ).pack(side="left", padx=8)
 
         bar.add_actions(_chain_actions)
+        self._chain_toolbar = bar
+        self._chain_adv_open = True  # start open so we can snapshot grid, then hide
+        self._chain_adv_grid: list[tuple[Any, dict[str, Any]]] = []
+        for w in bar.fields.grid_slaves():
+            info = dict(w.grid_info())
+            try:
+                col = int(info.get("column", -1))
+            except (TypeError, ValueError):
+                continue
+            if col >= 3:
+                self._chain_adv_grid.append((w, info))
+        self._set_chain_filters_visible(False)
+
+        # Recents chips
+        self.recents_row = ctk.CTkFrame(t, fg_color="transparent")
+        self.recents_row.pack(fill="x", padx=12, pady=(0, 2))
+        self._render_recents()
 
         self.chain_card = InfoCard(t, accent=C["cyan"])
         self.chain_card.pack(fill="x", padx=10, pady=(4, 4))
         self.chain_card.set(
-            "Enter a ticker",
-            "Load expiries → pick a date → Load chain. Green = call · Red = put.",
+            "Enter a ticker and press Load (or Enter)",
+            "One click loads nearest expiry + chain. Green = call · Red = put. "
+            "Double-click a Top Volume row to open it here.",
         )
 
         self.pcr_row = ctk.CTkFrame(t, fg_color="transparent")
@@ -776,37 +841,109 @@ class OptionChainApp(ctk.CTk):
             text_color=C["muted"],
         ).pack(side="left", padx=12)
 
-    def _chain_load_expiries(self) -> None:
-        sym = self.chain_symbol.get().strip()
-        if not sym:
-            messagebox.showwarning("OptionChain", "Enter a stock symbol.")
-            return
-
-        def work() -> list[str]:
-            _s, _n, _p, expiries = list_expiries(sym)
-            return list(expiries)
-
-        def ok(expiries: list[str]) -> None:
-            values = ["Nearest", *expiries] if expiries else ["Nearest"]
-            self.chain_expiry.configure(values=values)
-            self.chain_expiry.set(expiries[0] if expiries else "Nearest")
-            self.chain_card.set(
-                f"{sym.upper()} · {len(expiries)} expiries ready",
-                "Expiry list filled. Adjust filters if you want, then click ② Load chain.",
+    def _set_chain_filters_visible(self, visible: bool) -> None:
+        """Show/hide Near + strike filters (grid columns 3–5)."""
+        self._chain_adv_open = visible
+        for w, info in getattr(self, "_chain_adv_grid", []):
+            if visible:
+                opts = {
+                    k: v
+                    for k, v in info.items()
+                    if k in {"row", "column", "sticky", "padx", "pady", "rowspan", "columnspan"}
+                }
+                w.grid(**opts)
+            else:
+                w.grid_remove()
+        if hasattr(self, "_filters_btn"):
+            self._filters_btn.configure(
+                text="Filters ▾" if visible else "Filters ▸"
             )
-            self.chain_card.set_accent(C["cyan"])
 
-        self._run(work, ok, busy=f"Loading expiries for {sym.upper()}…")
+    def _toggle_chain_filters(self) -> None:
+        self._set_chain_filters_visible(not self._chain_adv_open)
+
+    def _render_recents(self) -> None:
+        for w in self.recents_row.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(
+            self.recents_row,
+            text="RECENTS",
+            font=_font(10, "bold"),
+            text_color=C["muted"],
+        ).pack(side="left", padx=(0, 8))
+        if not self._recents:
+            ctk.CTkLabel(
+                self.recents_row,
+                text="— load a chain to build history",
+                font=_font(11),
+                text_color=C["muted"],
+            ).pack(side="left")
+            return
+        for sym in self._recents[:8]:
+            btn = ctk.CTkButton(
+                self.recents_row,
+                text=sym,
+                width=64,
+                height=26,
+                corner_radius=6,
+                font=_font(11, "bold"),
+                fg_color=C["elevated"],
+                hover_color=C["cyan_dim"],
+                text_color=C["cyan"],
+                command=lambda s=sym: self._open_symbol_in_chain(s),
+            )
+            btn.pack(side="left", padx=3)
+
+    def _open_symbol_in_chain(self, symbol: str, *, auto_load: bool = True) -> None:
+        """Switch to Chain tab and optionally load the symbol."""
+        self.tabs.set("  📊  Chain  ")
+        self.chain_symbol.delete(0, "end")
+        self.chain_symbol.insert(0, symbol.strip().upper())
+        if auto_load:
+            self._chain_load()
+
+    def _on_chain_type_change(self, _value: str | None = None) -> None:
+        if self._suppress_chain_auto or self._chain_busy:
+            return
+        if self.chain_symbol.get().strip():
+            self._chain_load()
+
+    def _on_chain_expiry_change(self, _value: str | None = None) -> None:
+        if self._suppress_chain_auto or self._chain_busy:
+            return
+        if self.chain_symbol.get().strip():
+            self._chain_load()
+
+    def _quick_history(self) -> None:
+        sym = self.chain_symbol.get().strip() or self._current_symbol
+        if not sym:
+            messagebox.showwarning("OptionChain", "Enter a stock symbol first.")
+            return
+        self.tabs.set("  📈  History + Chart  ")
+        self.hist_symbol.delete(0, "end")
+        self.hist_symbol.insert(0, sym.upper())
+        self._history_load()
+
+    def _quick_compare(self) -> None:
+        sym = self.chain_symbol.get().strip() or self._current_symbol
+        if not sym:
+            messagebox.showwarning("OptionChain", "Enter a stock symbol first.")
+            return
+        self.tabs.set("  ⚖️  ITM vs OTM  ")
+        self.cmp_symbol.delete(0, "end")
+        self.cmp_symbol.insert(0, sym.upper())
+        self._compare_load()
 
     def _chain_load(self) -> None:
         sym = self.chain_symbol.get().strip()
         if not sym:
             messagebox.showwarning("OptionChain", "Enter a stock symbol.")
             return
+        if self._chain_busy:
+            return
         otype = self.chain_type_var.get()
-        expiry = self.chain_expiry.get().strip() or None
-        if expiry in {"Nearest", "Pick expiry", ""}:
-            expiry = None
+        expiry_raw = self.chain_expiry.get().strip() or "Nearest"
+        expiry = None if expiry_raw in {"Nearest", "Pick expiry", ""} else expiry_raw
         try:
             near = int(self.chain_near.get().strip() or "8")
         except ValueError:
@@ -816,9 +953,12 @@ class OptionChainApp(ctk.CTk):
         strike_min = float(smin) if smin else None
         strike_max = float(smax) if smax else None
 
+        self._chain_busy = True
+
         def work() -> dict[str, Any]:
+            # One shot: expiries + chain
             symbol, name, spot, available = list_expiries(sym)
-            if expiry:
+            if expiry and expiry in available:
                 selected = select_expiries(available, expiry=expiry)
             else:
                 selected = select_expiries(available, nearest=1)
@@ -840,18 +980,35 @@ class OptionChainApp(ctk.CTk):
                 "name": name,
                 "spot": spot,
                 "currency": data.currency,
+                "available": list(available),
                 "expiries": selected,
                 "pcr": pcr,
                 "df": filtered,
             }
 
         def ok(payload: dict[str, Any]) -> None:
+            self._chain_busy = False
+            self._current_symbol = payload["symbol"]
+            self._recents = _save_recent(payload["symbol"])
+            self._render_recents()
+
+            # Refresh expiry dropdown without re-triggering auto-load
+            self._suppress_chain_auto = True
+            try:
+                values = ["Nearest", *payload["available"]]
+                self.chain_expiry.configure(values=values)
+                chosen = payload["expiries"][0] if payload["expiries"] else "Nearest"
+                self.chain_expiry.set(chosen)
+            finally:
+                self._suppress_chain_auto = False
+
             pcr = payload["pcr"]
             self.chain_card.set(
                 f"{payload['symbol']}  —  {payload['name']}",
                 f"Spot  {payload['spot']:,.2f} {payload['currency']}   ·   "
                 f"Expiry  {', '.join(payload['expiries'])}   ·   "
-                f"{len(payload['df']) if payload['df'] is not None else 0} contracts shown",
+                f"{len(payload['df']) if payload['df'] is not None else 0} contracts  ·  "
+                f"auto-updated",
             )
             self.chain_card.set_accent(C["green"])
             self._set_pcr_chips(
@@ -893,7 +1050,13 @@ class OptionChainApp(ctk.CTk):
                     tags=tags,
                 )
 
-        self._run(work, ok, busy=f"Loading chain for {sym.upper()}…")
+        def err(exc: BaseException) -> None:
+            self._chain_busy = False
+            self.status.stop_busy("Error", ok=False)
+            messagebox.showerror("OptionChain", _err_text(exc))
+
+        self.status.start_busy(f"Loading {sym.upper()} (expiries + chain)…")
+        self.worker.submit(work, ok, err)
 
     # ── Top ──────────────────────────────────────────────────
     def _build_top_tab(self) -> None:
@@ -937,6 +1100,27 @@ class OptionChainApp(ctk.CTk):
             w = 200 if c == "name" else (70 if c == "rank" else 95)
             self.top_tree.column(c, width=w, anchor="center")
 
+        self.top_tree.bind("<Double-1>", self._on_top_double_click)
+        tip = ctk.CTkLabel(
+            t,
+            text="💡 Double-click a row to open that symbol in the Chain tab (auto-loads).",
+            font=_font(12),
+            text_color=C["cyan"],
+            anchor="w",
+        )
+        tip.pack(fill="x", padx=14, pady=(0, 6))
+
+    def _on_top_double_click(self, _event: Any = None) -> None:
+        sel = self.top_tree.selection()
+        if not sel:
+            return
+        vals = self.top_tree.item(sel[0], "values")
+        if not vals or len(vals) < 2:
+            return
+        symbol = str(vals[1]).strip()
+        if symbol:
+            self._open_symbol_in_chain(symbol, auto_load=True)
+
     def _top_load(self) -> None:
         try:
             n = int(self.top_n.get().strip() or "20")
@@ -953,7 +1137,8 @@ class OptionChainApp(ctk.CTk):
                 f"Top {len(result.leaders)} underlyings by options volume",
                 f"Scanned {result.contracts_scanned:,} contracts · "
                 f"{result.unique_underlyings} unique · "
-                f"{result.fetched_at.strftime('%Y-%m-%d %H:%M')}",
+                f"{result.fetched_at.strftime('%Y-%m-%d %H:%M')}  ·  "
+                f"double-click a row to open Chain",
             )
             self.top_card.set_accent(C["magenta"])
             _tree_clear(self.top_tree)
@@ -1446,6 +1631,16 @@ class OptionChainApp(ctk.CTk):
             "1.0",
             f"""OptionChain GUI  v{__version__}
 
+Automation
+──────────
+  • Chain: one Load button (expiries + chain together)
+  • Press Enter in Symbol to load
+  • Changing Type or Expiry reloads automatically
+  • Double-click a Top Volume row → opens Chain for that ticker
+  • Chart 5d / Compare shortcuts use the current symbol
+  • Recents chips under Chain for one-click reloads
+  • Filters ▸ hides Near ATM / strike range until you need them
+
 Color guide
 ───────────
   ● Green   CALL rows / ITM styles / up moves
@@ -1461,12 +1656,12 @@ Tabs
   History+Chart  Multi-day prices + interactive green/red plot
   ITM vs OTM     Research table for long call/put styles
 
-Quick start
-───────────
-  1. Top Volume → Load leaders → Export TradingView
-  2. Chain → enter ticker → Load expiries → Load chain
-  3. History → Load + plot (zoom/pan with toolbar)
-  4. ITM vs OTM → Compare styles with optional budget / target move
+Happy path
+──────────
+  1. Top Volume → Load leaders → double-click NVDA
+  2. Chain auto-fills → tweak type/expiry if needed
+  3. Chart 5d or Compare for the same symbol
+  4. Export TradingView from Top when ready
 
 {DISCLAIMER}
 
