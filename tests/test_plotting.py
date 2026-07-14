@@ -108,6 +108,44 @@ def test_plot_chain_history_with_path_saves(tmp_path: Path):
     assert path is not None and path.exists()
 
 
+def test_padded_ylim_zooms_stock_not_from_zero():
+    from optionchain.plotting import _padded_ylim
+
+    # BAC-like prices ~54–56 must not force axis to start at 0
+    lo, hi = _padded_ylim([54.2, 55.0, 55.8, 56.1], floor_at_zero=False)
+    assert lo > 40  # zoomed in around the 50s
+    assert hi > 56
+    assert hi - lo < 20  # much tighter than 0→60
+
+
+def test_padded_ylim_options_floor_zero():
+    from optionchain.plotting import _padded_ylim
+
+    lo, hi = _padded_ylim([0.3, 0.5, 1.2], floor_at_zero=True)
+    assert lo >= 0
+    assert hi > 1.2
+
+
+def test_build_figure_spot_ylim_tight():
+    from optionchain.plotting import build_chain_history_figure
+    import matplotlib.pyplot as plt
+
+    result = _sample_result()
+    # Force a high stock level so default 0-based scale would hide moves
+    result.spot_by_date = {
+        date(2026, 7, 7): 54.0,
+        date(2026, 7, 8): 55.5,
+        date(2026, 7, 9): 56.0,
+    }
+    result.spot_price = 56.0
+    fig = build_chain_history_figure(result)
+    ax_spot = fig.axes[1]
+    y0, y1 = ax_spot.get_ylim()
+    assert y0 > 40
+    assert y1 - y0 < 25
+    plt.close(fig)
+
+
 def test_cli_save_and_plot_flags():
     from optionchain.cli import build_parser, _validate_args
 

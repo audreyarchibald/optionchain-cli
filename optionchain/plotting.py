@@ -131,6 +131,40 @@ def print_terminal_plot(
     print("  Tip: save a high-res PNG with  --save  or  --save ./my_chart.png")
 
 
+def _padded_ylim(
+    values: list[float],
+    *,
+    floor_at_zero: bool = False,
+    pad_frac: float = 0.18,
+    min_pad_abs: float = 0.05,
+    min_pad_pct_of_level: float = 0.008,
+) -> tuple[float, float] | None:
+    """
+    Zoom y-limits to the data range so small moves are visible.
+
+    Without this, a $55 stock plotted from $0 looks almost flat.
+    """
+    nums = [float(v) for v in values if v is not None]
+    if not nums:
+        return None
+    lo = min(nums)
+    hi = max(nums)
+    span = hi - lo
+    # Flat or nearly flat series: still open a window around the level
+    if span < 1e-12:
+        base = abs(hi) if abs(hi) > 1e-12 else 1.0
+        pad = max(base * 0.02, min_pad_abs)
+    else:
+        pad = max(span * pad_frac, abs(hi) * min_pad_pct_of_level, min_pad_abs)
+    y0, y1 = lo - pad, hi + pad
+    if floor_at_zero:
+        # Options can't go below 0; keep a little headroom above zero only if needed
+        y0 = max(0.0, y0)
+        if y1 <= y0:
+            y1 = y0 + min_pad_abs
+    return y0, y1
+
+
 def build_chain_history_figure(
     result: ChainHistoryResult,
     *,
@@ -139,6 +173,10 @@ def build_chain_history_figure(
 ):
     """
     Build a matplotlib Figure for call/put history (for GUI embed or save).
+
+    Y-axes auto-zoom to the data range (with padding) so price moves
+    stay visible — especially the underlying panel, which must not
+    always start at $0.
 
     Caller owns the figure (close when done if not embedding).
     """
@@ -159,15 +197,18 @@ def build_chain_history_figure(
         1,
         figsize=figsize,
         sharex=True,
-        gridspec_kw={"height_ratios": [3.2, 1.4]},
+        gridspec_kw={"height_ratios": [3.2, 1.6]},
     )
     ax_opt, ax_spot = axes
+
+    option_ys: list[float] = []
 
     def _plot_group(group: list[ContractHistory], color: str) -> None:
         for c in sorted(group, key=lambda x: x.strike):
             xs, ys = _series_for_contract(c, result.trade_dates)
             if len(xs) < 1:
                 continue
+            option_ys.extend(ys)
             ax_opt.plot(
                 xs,
                 ys,
@@ -208,6 +249,9 @@ def build_chain_history_figure(
         fontsize=9,
         framealpha=0.92,
     )
+    opt_lim = _padded_ylim(option_ys, floor_at_zero=True, pad_frac=0.2)
+    if opt_lim is not None:
+        ax_opt.set_ylim(*opt_lim)
 
     spot_x: list[date] = []
     spot_y: list[float] = []
@@ -221,12 +265,24 @@ def build_chain_history_figure(
             spot_x,
             spot_y,
             marker="s",
-            markersize=4,
-            linewidth=2.0,
+            markersize=5,
+            linewidth=2.2,
             color=SPOT_COLOR_HEX,
             label=f"{result.symbol} spot",
         )
-        ax_spot.fill_between(spot_x, spot_y, alpha=0.12, color=SPOT_COLOR_HEX)
+        spot_lim = _padded_ylim(
+            spot_y,
+            floor_at_zero=False,
+            pad_frac=0.25,
+            min_pad_abs=0.15,
+            min_pad_pct_of_level=0.01,
+        )
+        if spot_lim is not None:
+            y0, y1 = spot_lim
+            ax_spot.set_ylim(y0, y1)
+            # Shade from the zoomed floor up to the line (not from $0)
+            ax_spot.fill_between(spot_x, spot_y, y0, alpha=0.18, color=SPOT_COLOR_HEX)
+
     ax_spot.set_ylabel("Stock price ($)")
     ax_spot.set_xlabel("Date")
     ax_spot.grid(True, alpha=0.28, linestyle="--")
@@ -238,7 +294,8 @@ def build_chain_history_figure(
     fig.text(
         0.01,
         0.01,
-        "Green = calls · Red = puts · number on line = strike  |  Yahoo Finance",
+        "Green = calls · Red = puts · number on line = strike  |  "
+        "Y-axes auto-zoom to data  |  Yahoo Finance",
         fontsize=8,
         color="#666666",
     )
