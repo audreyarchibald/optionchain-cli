@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "optionchain-cli"
-version = "1.2.0"
+version = "1.3.0"
 description = "Beginner-friendly CLI + GUI for stock option chains, PCR, history charts, and ITM vs OTM research"
 readme = "README.md"
 requires-python = ">=3.10"

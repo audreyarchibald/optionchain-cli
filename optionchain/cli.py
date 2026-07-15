@@ -20,6 +20,7 @@ from optionchain.display import (
     print_put_call_ratio,
     print_summary,
     print_tip,
+    print_walls,
 )
 from optionchain.fetcher import OptionChainError, fetch_option_chain, list_expiries
 from optionchain.filters import apply_filters, select_expiries
@@ -27,6 +28,7 @@ from optionchain.history import fetch_chain_history
 from optionchain.leaders import TOP_COMMANDS, fetch_option_volume_leaders
 from optionchain.metrics import compute_put_call_ratio, summarize_chain
 from optionchain.plotting import print_terminal_plot, save_chain_history_plot
+from optionchain.walls import analyze_walls
 from optionchain.watchlist import export_tradingview_watchlist
 
 
@@ -91,6 +93,12 @@ examples:
 
   optionchain NVDA --compare call --if-spot 220 --expiry 2026-08-15
       Compare styles + intrinsic value if NVDA finishes at 220
+
+  optionchain TSLA --walls
+      Call wall, put wall, max pain + gamma-style evaluation
+
+  optionchain SPY --walls --expiry 2026-07-18 --top-walls 8
+      Walls for a specific expiry; show top 8 OI strikes per side
 """
 
 
@@ -270,6 +278,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--walls",
+        "--gamma",
+        action="store_true",
+        dest="walls",
+        help=(
+            "Call wall / put wall / max pain analysis for one expiry "
+            "(OI concentrations + gamma-style research notes)."
+        ),
+    )
+    parser.add_argument(
+        "--top-walls",
+        type=int,
+        default=5,
+        metavar="N",
+        help="With --walls: show top N OI strikes per side (default 5).",
+    )
+    parser.add_argument(
         "--target-move",
         type=float,
         default=None,
@@ -357,6 +382,8 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.compare is not None:
         if args.history_days is not None:
             raise OptionChainError("Use either --compare or --history, not both.")
+        if args.walls:
+            raise OptionChainError("Use either --compare or --walls, not both.")
         if args.expiry_from or args.expiry_to or args.nearest is not None:
             raise OptionChainError(
                 "--compare uses a single expiry. "
@@ -368,6 +395,17 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise OptionChainError("--budget must be a positive dollar amount.")
         if args.if_spot is not None and args.if_spot <= 0:
             raise OptionChainError("--if-spot must be a positive price.")
+
+    if args.walls:
+        if args.history_days is not None:
+            raise OptionChainError("Use either --walls or --history, not both.")
+        if args.expiry_from or args.expiry_to or args.nearest is not None:
+            raise OptionChainError(
+                "--walls uses a single expiry. "
+                "Pass --expiry YYYY-MM-DD or omit for the nearest."
+            )
+        if args.top_walls < 1 or args.top_walls > 20:
+            raise OptionChainError("--top-walls must be between 1 and 20.")
 
     if args.expiry and (args.expiry_from or args.expiry_to):
         raise OptionChainError(
@@ -473,6 +511,18 @@ def _run_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_walls(args: argparse.Namespace) -> int:
+    analysis = analyze_walls(
+        args.symbol,
+        expiry=args.expiry,
+        top_n=args.top_walls,
+    )
+    print_walls(analysis)
+    if args.explain:
+        print_glossary(verbose=True)
+    return 0
+
+
 def _run_history(args: argparse.Namespace) -> int:
     near = args.near if args.near is not None else 6
     result = fetch_chain_history(
@@ -515,6 +565,9 @@ def _run_chain(args: argparse.Namespace) -> int:
 
     if args.compare is not None:
         return _run_compare(args)
+
+    if args.walls:
+        return _run_walls(args)
 
     if args.history_days is not None:
         return _run_history(args)
@@ -578,6 +631,9 @@ def _run_chain(args: argparse.Namespace) -> int:
         )
         print_tip(
             f"ITM vs OTM: optionchain {data.symbol} --compare call"
+        )
+        print_tip(
+            f"Call/put walls: optionchain {data.symbol} --walls"
         )
 
     return 0

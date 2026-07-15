@@ -18,6 +18,7 @@ from optionchain.fetcher import OptionChainData
 from optionchain.history import ChainHistoryResult
 from optionchain.leaders import LeadersResult
 from optionchain.metrics import PutCallRatio
+from optionchain.walls import WallAnalysis, WallLevel
 
 
 def _build_console() -> Console:
@@ -615,6 +616,137 @@ def print_compare(result: CompareResult) -> None:
     print_tip(
         f"Tighten:  optionchain {result.symbol} --compare {result.option_type} "
         f"--target-move 5 --budget 500"
+    )
+
+
+def _wall_row(table: Table, wall: WallLevel | None, label: str, style: str) -> None:
+    if wall is None:
+        table.add_row(Text(label, style=style), "—", "—", "—", "—", "—")
+        return
+    table.add_row(
+        Text(label, style=style),
+        f"{wall.strike:,.2f}",
+        f"{wall.distance_pct:+.2f}%",
+        f"{wall.open_interest:,}",
+        f"{100 * wall.share_of_side_oi:.1f}%",
+        f"{wall.volume:,}" if wall.volume else "—",
+    )
+
+
+def print_walls(analysis: WallAnalysis) -> None:
+    """Call wall / put wall / max pain + gamma-style evaluation."""
+    out = Console(width=max(getattr(console, "width", 80) or 80, 110))
+    body = Text()
+    body.append(analysis.symbol, style="bold cyan")
+    body.append(f"  —  {analysis.company_name}\n")
+    body.append("Spot: ", style="dim")
+    body.append(f"{analysis.spot_price:,.2f} {analysis.currency}", style="bold green")
+    body.append("\nExpiry: ", style="dim")
+    body.append(analysis.expiry, style="bold")
+    if analysis.dte is not None:
+        body.append(f"  ({analysis.dte}d to expiry)", style="dim")
+    body.append("\nFetched: ", style="dim")
+    body.append(analysis.fetched_at.strftime("%Y-%m-%d %H:%M:%S"))
+    out.print(
+        Panel(
+            body,
+            title="[bold]Call Wall · Put Wall · Max Pain[/]  (gamma-style research)",
+            border_style="magenta",
+        )
+    )
+
+    # Headline levels
+    levels = Table(
+        title="Key levels",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold",
+    )
+    levels.add_column("Level")
+    levels.add_column("Strike", justify="right")
+    levels.add_column("vs Spot", justify="right")
+    levels.add_column("OI", justify="right")
+    levels.add_column("% of side OI", justify="right")
+    levels.add_column("Vol", justify="right")
+
+    _wall_row(levels, analysis.put_wall, "Put wall (support)", "bold red")
+    _wall_row(levels, analysis.call_wall, "Call wall (resistance)", "bold green")
+    if analysis.max_pain is not None:
+        dist = (
+            100.0 * (analysis.max_pain - analysis.spot_price) / analysis.spot_price
+            if analysis.spot_price
+            else 0.0
+        )
+        levels.add_row(
+            Text("Max pain", style="bold yellow"),
+            f"{analysis.max_pain:,.2f}",
+            f"{dist:+.2f}%",
+            "—",
+            "—",
+            "—",
+        )
+    out.print(levels)
+
+    if (
+        analysis.pin_range_low is not None
+        and analysis.pin_range_high is not None
+    ):
+        inside = analysis.spot_in_pin_range
+        pin_style = "bold cyan" if inside else "dim"
+        out.print(
+            Text(
+                f"  Pin / gamma range:  {analysis.pin_range_low:g}  →  "
+                f"{analysis.pin_range_high:g}   "
+                f"({'spot INSIDE range' if inside else 'spot OUTSIDE range'})",
+                style=pin_style,
+            )
+        )
+
+    out.print(
+        f"[dim]  Total OI — calls {analysis.total_call_oi:,} · "
+        f"puts {analysis.total_put_oi:,}   ·   "
+        f"Volume — calls {analysis.total_call_vol:,} · "
+        f"puts {analysis.total_put_vol:,}[/dim]"
+    )
+
+    # Top walls tables side concept
+    for title, walls, style in (
+        ("Top call OI strikes", analysis.top_call_walls, "green"),
+        ("Top put OI strikes", analysis.top_put_walls, "red"),
+    ):
+        if not walls:
+            continue
+        t = Table(title=title, box=box.SIMPLE_HEAVY, show_header=True, header_style="bold")
+        t.add_column("#", justify="right", style="dim")
+        t.add_column("Strike", justify="right", style=style)
+        t.add_column("vs Spot", justify="right")
+        t.add_column("OI", justify="right")
+        t.add_column("% side", justify="right")
+        t.add_column("Vol", justify="right")
+        for w in walls:
+            t.add_row(
+                str(w.rank),
+                f"{w.strike:,.2f}",
+                f"{w.distance_pct:+.2f}%",
+                f"{w.open_interest:,}",
+                f"{100 * w.share_of_side_oi:.1f}%",
+                f"{w.volume:,}" if w.volume else "—",
+            )
+        out.print(t)
+
+    out.print()
+    out.print("[bold magenta]Gamma-style evaluation[/bold magenta]")
+    for line in analysis.evaluation:
+        # simple bold markers
+        text = line.replace("**", "")
+        out.print(f"  • {text}")
+
+    print_tip(
+        f"Chain view:  optionchain {analysis.symbol} --expiry {analysis.expiry}"
+    )
+    print_tip(
+        f"ITM vs OTM:  optionchain {analysis.symbol} --compare call "
+        f"--expiry {analysis.expiry}"
     )
 
 

@@ -40,6 +40,7 @@ from optionchain.universe import (
     big_cap_choices,
     parse_big_cap_choice,
 )
+from optionchain.walls import analyze_walls
 from optionchain.watchlist import export_tradingview_watchlist
 
 try:
@@ -605,6 +606,7 @@ class OptionChainApp(ctk.CTk):
         self.tab_top = self.tabs.add("  🔥  Top Volume  ")
         self.tab_history = self.tabs.add("  📈  History + Chart  ")
         self.tab_compare = self.tabs.add("  ⚖️  ITM vs OTM  ")
+        self.tab_walls = self.tabs.add("  🧱  Walls / Gamma  ")
         self.tab_help = self.tabs.add("  ❓  Help  ")
 
         for tab in (
@@ -612,6 +614,7 @@ class OptionChainApp(ctk.CTk):
             self.tab_top,
             self.tab_history,
             self.tab_compare,
+            self.tab_walls,
             self.tab_help,
         ):
             tab.configure(fg_color=C["surface"])
@@ -620,6 +623,7 @@ class OptionChainApp(ctk.CTk):
         self._build_top_tab()
         self._build_history_tab()
         self._build_compare_tab()
+        self._build_walls_tab()
         self._build_help_tab()
 
         self.status = StatusBar(self)
@@ -781,6 +785,9 @@ class OptionChainApp(ctk.CTk):
             ).pack(side="left", padx=(0, 8))
             make_secondary_btn(
                 box, "Compare", self._quick_compare, width=100
+            ).pack(side="left", padx=(0, 8))
+            make_secondary_btn(
+                box, "Walls", self._quick_walls, width=90
             ).pack(side="left", padx=(0, 8))
             ctk.CTkLabel(
                 box,
@@ -1109,6 +1116,24 @@ class OptionChainApp(ctk.CTk):
         self.cmp_symbol.delete(0, "end")
         self.cmp_symbol.insert(0, sym.upper())
         self._compare_load()
+
+    def _quick_walls(self) -> None:
+        sym = self.chain_symbol.get().strip() or self._current_symbol
+        if not sym:
+            messagebox.showwarning("OptionChain", "Enter a stock symbol first.")
+            return
+        self.tabs.set("  🧱  Walls / Gamma  ")
+        self.walls_symbol.delete(0, "end")
+        self.walls_symbol.insert(0, sym.upper())
+        exp = ""
+        if hasattr(self, "chain_expiry"):
+            exp = self.chain_expiry.get().strip()
+            if exp in {"Nearest", "Pick expiry", ""}:
+                exp = ""
+        self.walls_expiry.delete(0, "end")
+        if exp:
+            self.walls_expiry.insert(0, exp)
+        self._walls_load()
 
     def _chain_load(self) -> None:
         sym = self.chain_symbol.get().strip()
@@ -1843,6 +1868,281 @@ class OptionChainApp(ctk.CTk):
 
         self._run(work, ok, busy=f"Comparing {side}s on {sym.upper()}…")
 
+    # ── Walls / Gamma ────────────────────────────────────────
+    def _build_walls_tab(self) -> None:
+        t = self.tab_walls
+        bar = self._toolbar(t)
+        default_sym = self._recents[0] if self._recents else "SPY"
+        self.walls_symbol = make_entry(
+            bar.fields, width=110, text=default_sym, placeholder="Ticker"
+        )
+        self.walls_symbol.bind("<Return>", lambda _e: self._walls_load())
+        self.walls_expiry = make_entry(
+            bar.fields, width=130, placeholder="Nearest if empty"
+        )
+        self.walls_topn = make_entry(bar.fields, width=60, text="5")
+        bar.add_field("Symbol", self.walls_symbol, label_color=C["cyan"])
+        bar.add_field("Expiry", self.walls_expiry, label_color=C["amber"])
+        bar.add_field("Top N", self.walls_topn, label_color=C["magenta"])
+
+        def _walls_actions(box: ctk.CTkFrame) -> None:
+            make_primary_btn(
+                box, "Analyze walls", self._walls_load, width=140
+            ).pack(side="left", padx=(0, 10))
+            ctk.CTkLabel(
+                box,
+                text="Call wall = heavy call OI above spot · Put wall = heavy put OI below spot",
+                font=_font(11),
+                text_color=C["muted"],
+            ).pack(side="left")
+
+        bar.add_actions(_walls_actions)
+
+        self.walls_card = InfoCard(t, accent=C["magenta"])
+        self.walls_card.pack(fill="x", padx=10, pady=4)
+        self.walls_card.set(
+            "Call wall · Put wall · Max pain",
+            "OI concentrations for gamma-style positioning research (not a trade signal).",
+        )
+
+        # Headline levels
+        levels_wrap = ctk.CTkFrame(t, fg_color="transparent")
+        levels_wrap.pack(fill="x", padx=10, pady=4)
+        levels_wrap.grid_columnconfigure(0, weight=1)
+        levels_wrap.grid_columnconfigure(1, weight=1)
+        levels_wrap.grid_columnconfigure(2, weight=1)
+
+        self.wall_put_chip = ctk.CTkFrame(
+            levels_wrap, fg_color=C["red_dim"], corner_radius=10
+        )
+        self.wall_put_chip.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self.wall_put_lbl = ctk.CTkLabel(
+            self.wall_put_chip,
+            text="PUT WALL\n—",
+            font=_font(14, "bold"),
+            text_color=C["red"],
+            justify="center",
+        )
+        self.wall_put_lbl.pack(padx=12, pady=14)
+
+        self.wall_spot_chip = ctk.CTkFrame(
+            levels_wrap, fg_color=C["elevated"], corner_radius=10
+        )
+        self.wall_spot_chip.grid(row=0, column=1, sticky="nsew", padx=5)
+        self.wall_spot_lbl = ctk.CTkLabel(
+            self.wall_spot_chip,
+            text="SPOT\n—",
+            font=_font(14, "bold"),
+            text_color=C["cyan"],
+            justify="center",
+        )
+        self.wall_spot_lbl.pack(padx=12, pady=14)
+
+        self.wall_call_chip = ctk.CTkFrame(
+            levels_wrap, fg_color=C["green_dim"], corner_radius=10
+        )
+        self.wall_call_chip.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+        self.wall_call_lbl = ctk.CTkLabel(
+            self.wall_call_chip,
+            text="CALL WALL\n—",
+            font=_font(14, "bold"),
+            text_color=C["green"],
+            justify="center",
+        )
+        self.wall_call_lbl.pack(padx=12, pady=14)
+
+        self.walls_pin = ctk.CTkLabel(
+            t, text="", font=_font(12), text_color=C["muted"], anchor="w"
+        )
+        self.walls_pin.pack(fill="x", padx=14, pady=(2, 4))
+
+        # Two tables: top calls | top puts
+        tables = ctk.CTkFrame(t, fg_color="transparent")
+        tables.pack(fill="both", expand=True, padx=10, pady=4)
+        tables.grid_columnconfigure(0, weight=1)
+        tables.grid_columnconfigure(1, weight=1)
+        tables.grid_rowconfigure(0, weight=1)
+
+        left = ctk.CTkFrame(
+            tables, fg_color=C["card"], corner_radius=10, border_width=1, border_color=C["border"]
+        )
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        ctk.CTkLabel(
+            left, text="TOP CALL OI", font=_font(10, "bold"), text_color=C["green"]
+        ).pack(anchor="w", padx=10, pady=(8, 0))
+        host_l = tk.Frame(left, bg=C["card"])
+        host_l.pack(fill="both", expand=True, padx=6, pady=6)
+        self.walls_call_tree = ttk.Treeview(
+            host_l,
+            columns=("rank", "strike", "dist", "oi", "share", "vol"),
+            show="headings",
+            style="App.Treeview",
+            height=8,
+        )
+        for c, h, w in [
+            ("rank", "#", 36),
+            ("strike", "Strike", 80),
+            ("dist", "vs Spot", 70),
+            ("oi", "OI", 80),
+            ("share", "% side", 60),
+            ("vol", "Vol", 70),
+        ]:
+            self.walls_call_tree.heading(c, text=h)
+            self.walls_call_tree.column(c, width=w, anchor="center")
+        self.walls_call_tree.pack(fill="both", expand=True)
+        _tag_tree(self.walls_call_tree)
+
+        right = ctk.CTkFrame(
+            tables, fg_color=C["card"], corner_radius=10, border_width=1, border_color=C["border"]
+        )
+        right.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        ctk.CTkLabel(
+            right, text="TOP PUT OI", font=_font(10, "bold"), text_color=C["red"]
+        ).pack(anchor="w", padx=10, pady=(8, 0))
+        host_r = tk.Frame(right, bg=C["card"])
+        host_r.pack(fill="both", expand=True, padx=6, pady=6)
+        self.walls_put_tree = ttk.Treeview(
+            host_r,
+            columns=("rank", "strike", "dist", "oi", "share", "vol"),
+            show="headings",
+            style="App.Treeview",
+            height=8,
+        )
+        for c, h, w in [
+            ("rank", "#", 36),
+            ("strike", "Strike", 80),
+            ("dist", "vs Spot", 70),
+            ("oi", "OI", 80),
+            ("share", "% side", 60),
+            ("vol", "Vol", 70),
+        ]:
+            self.walls_put_tree.heading(c, text=h)
+            self.walls_put_tree.column(c, width=w, anchor="center")
+        self.walls_put_tree.pack(fill="both", expand=True)
+        _tag_tree(self.walls_put_tree)
+
+        eval_wrap = ctk.CTkFrame(
+            t, fg_color=C["card"], corner_radius=10, border_width=1, border_color=C["border"]
+        )
+        eval_wrap.pack(fill="x", padx=10, pady=(4, 10))
+        ctk.CTkLabel(
+            eval_wrap,
+            text="GAMMA-STYLE EVALUATION",
+            font=_font(10, "bold"),
+            text_color=C["magenta"],
+        ).pack(anchor="w", padx=12, pady=(8, 0))
+        self.walls_eval = ctk.CTkTextbox(
+            eval_wrap,
+            height=130,
+            font=_font(12),
+            fg_color=C["card"],
+            text_color=C["text"],
+            border_width=0,
+            wrap="word",
+        )
+        self.walls_eval.pack(fill="x", padx=8, pady=8)
+        self.walls_eval.insert(
+            "1.0",
+            "Load a symbol to evaluate call/put walls and max pain.\n"
+            "Research framing only — not a prediction or trade signal.",
+        )
+        self.walls_eval.configure(state="disabled")
+
+    def _walls_load(self) -> None:
+        sym = self.walls_symbol.get().strip()
+        if not sym:
+            messagebox.showwarning("OptionChain", "Enter a stock symbol.")
+            return
+        expiry = self.walls_expiry.get().strip() or None
+        try:
+            top_n = int(self.walls_topn.get().strip() or "5")
+        except ValueError:
+            top_n = 5
+
+        def work() -> Any:
+            return analyze_walls(sym, expiry=expiry, top_n=top_n)
+
+        def ok(a: Any) -> None:
+            self.walls_card.set(
+                f"{a.symbol}  —  {a.company_name}",
+                f"Spot {a.spot_price:,.2f} {a.currency}  ·  expiry {a.expiry}"
+                + (f"  ·  {a.dte}d" if a.dte is not None else "")
+                + f"  ·  call OI {a.total_call_oi:,}  ·  put OI {a.total_put_oi:,}",
+            )
+            self.walls_card.set_accent(C["magenta"])
+
+            if a.put_wall:
+                self.wall_put_lbl.configure(
+                    text=(
+                        f"PUT WALL\n{a.put_wall.strike:g}\n"
+                        f"{a.put_wall.distance_pct:+.1f}%  ·  OI {a.put_wall.open_interest:,}"
+                    )
+                )
+            else:
+                self.wall_put_lbl.configure(text="PUT WALL\n—")
+
+            self.wall_spot_lbl.configure(text=f"SPOT\n{a.spot_price:,.2f}")
+
+            if a.call_wall:
+                self.wall_call_lbl.configure(
+                    text=(
+                        f"CALL WALL\n{a.call_wall.strike:g}\n"
+                        f"{a.call_wall.distance_pct:+.1f}%  ·  OI {a.call_wall.open_interest:,}"
+                    )
+                )
+            else:
+                self.wall_call_lbl.configure(text="CALL WALL\n—")
+
+            pin_bits = []
+            if a.max_pain is not None:
+                pin_bits.append(f"Max pain ≈ {a.max_pain:g}")
+            if a.pin_range_low is not None and a.pin_range_high is not None:
+                pin_bits.append(
+                    f"Pin range {a.pin_range_low:g}–{a.pin_range_high:g}"
+                    + (" · spot INSIDE" if a.spot_in_pin_range else " · spot OUTSIDE")
+                )
+            self.walls_pin.configure(
+                text="  ·  ".join(pin_bits) if pin_bits else "",
+                text_color=C["cyan"] if a.spot_in_pin_range else C["muted"],
+            )
+
+            def fill_tree(tree: ttk.Treeview, walls: list, tag: str) -> None:
+                _tree_clear(tree)
+                for i, w in enumerate(walls):
+                    tags = (tag, "alt") if i % 2 else (tag,)
+                    tree.insert(
+                        "",
+                        "end",
+                        values=(
+                            w.rank,
+                            f"{w.strike:.2f}",
+                            f"{w.distance_pct:+.1f}%",
+                            f"{w.open_interest:,}",
+                            f"{100 * w.share_of_side_oi:.1f}%",
+                            f"{w.volume:,}" if w.volume else "—",
+                        ),
+                        tags=tags,
+                    )
+
+            fill_tree(self.walls_call_tree, a.top_call_walls, "call")
+            fill_tree(self.walls_put_tree, a.top_put_walls, "put")
+
+            self.walls_eval.configure(state="normal")
+            self.walls_eval.delete("1.0", "end")
+            self.walls_eval.insert(
+                "1.0",
+                "\n\n".join(f"•  {line.replace('**', '')}" for line in a.evaluation),
+            )
+            self.walls_eval.configure(state="disabled")
+
+            # Keep other tabs in sync
+            self._current_symbol = a.symbol
+            if hasattr(self, "chain_symbol"):
+                self.chain_symbol.delete(0, "end")
+                self.chain_symbol.insert(0, a.symbol)
+
+        self._run(work, ok, busy=f"Analyzing walls for {sym.upper()}…")
+
     # ── Help ─────────────────────────────────────────────────
     def _build_help_tab(self) -> None:
         t = self.tab_help
@@ -1888,6 +2188,7 @@ Tabs
   Top Volume     Busiest underlyings → Export TradingView watchlist
   History+Chart  Multi-day prices + interactive green/red plot
   ITM vs OTM     Research table for long call/put styles
+  Walls / Gamma  Call wall, put wall, max pain, pin range evaluation
 
 Happy path
 ──────────

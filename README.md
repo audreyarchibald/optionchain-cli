@@ -122,6 +122,10 @@ uv run optionchain GOOG --no-pcr
 uv run optionchain TSLA --compare call
 uv run optionchain SPY --compare put --target-move 3 --budget 400
 uv run optionchain NVDA --compare call --if-spot 220
+
+# Call wall / put wall / max pain (gamma-style evaluation)
+uv run optionchain TSLA --walls
+uv run optionchain SPY --walls --expiry 2026-07-18 --top-walls 8
 ```
 
 ---
@@ -162,6 +166,24 @@ Creates a text file (one symbol per line, e.g. `NASDAQ:AAPL`) you can import in 
 4. Choose the `.txt` file
 
 Use `--no-exchange` if you prefer bare tickers without the `NASDAQ:` / `NYSE:` prefix.
+
+---
+
+## Call wall / put wall / max pain (`--walls`)
+
+```bash
+uv run optionchain TSLA --walls
+uv run optionchain SPY --gamma          # alias
+```
+
+| Level | Definition (research convention) |
+|-------|----------------------------------|
+| **Call wall** | Highest **call OI** at or above spot (fallback: max call OI) |
+| **Put wall** | Highest **put OI** at or below spot (fallback: max put OI) |
+| **Max pain** | Strike minimizing total option holder value at expiry |
+| **Pin range** | Band between put wall and call wall |
+
+Also prints top OI strikes per side and a plain-English **gamma-style evaluation** (positioning notes — not a trade signal). Yahoo OI can be delayed/incomplete.
 
 ---
 
@@ -224,6 +246,8 @@ usage: optionchain [-h] [-t {call,put,all}] [-e EXPIRY]
 | `--plot` | With `--history`: draw call/put chart **in the terminal** |
 | `--save [FILE]` | Also save a PNG (auto name, or your path). Implies `--plot` |
 | `--compare call\|put` | ITM vs ATM vs OTM styles for a long call/put |
+| `--walls` / `--gamma` | Call wall, put wall, max pain + evaluation |
+| `--top-walls N` | With `--walls`: top N OI strikes per side (default 5) |
 | `--target-move PCT` | With `--compare`: keep strikes that can break even on ~PCT move |
 | `--budget USD` | With `--compare`: max $ premium per contract (×100) |
 | `--if-spot PRICE` | With `--compare`: intrinsic if stock finishes at PRICE |
